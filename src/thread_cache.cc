@@ -122,6 +122,11 @@ void* ThreadCache::FetchFromCentralCache(uint32 cl, int32_t byte_size,
 
   const int num_to_move = min<int>(list->max_length(), batch_size);
   void *start, *end;
+    
+  /*
+  >>> for flowchart 7 goto implementation of RemoveRange
+  >>> method in central_freelist.cc file.
+  */
   int fetch_count = Static::central_cache()[cl].RemoveRange(
       &start, &end, num_to_move);
 
