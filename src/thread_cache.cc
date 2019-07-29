@@ -138,6 +138,10 @@ void* ThreadCache::FetchFromCentralCache(uint32 cl, int32_t byte_size,
 
   if (--fetch_count >= 0) {
     size_ += byte_size * fetch_count;
+    
+    /*
+    >>> flowchart 9. place extra objects in thread cache free list
+    */
     list->PushRange(fetch_count, SLL_Next(start), end);
   }
 
