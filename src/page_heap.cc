@@ -83,8 +83,19 @@ Span* PageHeap::SearchFreeAndLargeLists(Length n) {
   for (Length s = n; s <= kMaxPages; s++) {
     Span* ll = &free_[s - 1].normal;
     // If we're lucky, ll is non-empty, meaning it has a suitable span.
+    
+    /*
+    >>> flowchart 10. is page heap linked list empty?
+    >>> flowchart 11. look for n run of pages (n is requested from last step) 
+    */
     if (!DLL_IsEmpty(ll)) {
       ASSERT(ll->next->location == Span::ON_NORMAL_FREELIST);
+      
+      /*
+      >>> flowchart 12. carve run of pages according to n
+      >>> for more info about carve method goto Carve method impl in this file.
+      >> for flowchart 13 go back to Populate method in central_freelist.cc file.
+      */
       return Carve(ll->next, n);
     }
     // Alternatively, maybe there's a usable returned span.
@@ -105,6 +116,10 @@ Span* PageHeap::SearchFreeAndLargeLists(Length n) {
     }
   }
   // No luck in free lists, our last chance is in a larger class.
+  
+  /*
+  >>> for flowchart 15 goto implementation of AllocLarge function in this file.
+  */
   return AllocLarge(n);  // May be NULL
 }
 
@@ -114,6 +129,9 @@ Span* PageHeap::New(Length n) {
   ASSERT(Check());
   ASSERT(n > 0);
 
+  /*
+  >>> for flowchart 10 goto implementation of SearchFreeAndLargeLists in this file.
+  */
   Span* result = SearchFreeAndLargeLists(n);
   if (result != NULL)
     return result;
@@ -151,6 +169,10 @@ Span* PageHeap::New(Length n) {
   }
 
   // Grow the heap and try again.
+  
+  /*
+  >>> for flowchart 18 goto implementation of GrowHeap method in this file.
+  */
   if (!GrowHeap(n)) {
     ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
     ASSERT(Check());
@@ -175,6 +197,12 @@ Span* PageHeap::AllocLarge(Length n) {
   bound.length = n;
 
   // First search the NORMAL spans..
+  
+  /*
+  >>> flowchart 15. does pageheap spanset of large objects have object? 
+  >>> flowchart 16. look for large spans that have at least n pages
+  >>> for flowchart 18 go back to New method in this file.
+  */
   SpanSet::iterator place = large_normal_.upper_bound(SpanPtrWithLength(&bound));
   if (place != large_normal_.end()) {
     best = place->span;
@@ -194,6 +222,10 @@ Span* PageHeap::AllocLarge(Length n) {
   }
 
   if (best == best_normal) {
+    
+    /*
+    >>> flowchart 17. carve large span according to n
+    */
     return best == NULL ? NULL : Carve(best, n);
   }
 
@@ -628,6 +660,12 @@ bool PageHeap::GrowHeap(Length n) {
   size_t actual_size;
   void* ptr = NULL;
   if (EnsureLimit(ask)) {
+      
+      /*
+      >>> flowchart 18. grow heap by  requesting  m size of bytes that is multiple 
+      >>> size of n pages. for more info about allocating by system calls goto
+      >>> implementation of TCMalloc_SystemAlloc in system_alloc.cc file.
+      */
       ptr = TCMalloc_SystemAlloc(ask << kPageShift, &actual_size, kPageSize);
   }
   if (ptr == NULL) {
@@ -671,6 +709,12 @@ bool PageHeap::GrowHeap(Length n) {
   if (pagemap_.Ensure(p-1, ask+2)) {
     // Pretend the new area is allocated and then Delete() it to cause
     // any necessary coalescing to occur.
+    
+    /*
+    >>> flowchart 19. add span with size m to page heap free linked list of spans
+    >>> or page heap spanset of large spans. for more info goto impl of 
+    >>> NewSpan and Delete method in this file.
+    */
     Span* span = NewSpan(p, ask);
     RecordSpan(span);
     Delete(span);
