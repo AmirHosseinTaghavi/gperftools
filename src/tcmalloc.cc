@@ -1352,7 +1352,10 @@ static void* do_malloc_pages(ThreadCache* heap, size_t size) {
 static void *nop_oom_handler(size_t size) {
   return NULL;
 }
-
+    
+/*
+>>> flowchart 1. start
+*/
 ATTRIBUTE_ALWAYS_INLINE inline void* do_malloc(size_t size) {
   if (PREDICT_FALSE(ThreadCache::IsUseEmergencyMalloc())) {
     return tcmalloc::EmergencyMalloc(size);
@@ -1364,7 +1367,10 @@ ATTRIBUTE_ALWAYS_INLINE inline void* do_malloc(size_t size) {
 
   ASSERT(Static::IsInited());
   ASSERT(cache != NULL);
-
+    
+  /*
+  >>> flowchart 2. map allocation size to proper size class
+  */
   if (PREDICT_FALSE(!Static::sizemap()->GetSizeClass(size, &cl))) {
     return do_malloc_pages(cache, size);
   }
@@ -1376,6 +1382,11 @@ ATTRIBUTE_ALWAYS_INLINE inline void* do_malloc(size_t size) {
 
   // The common case, and also the simplest.  This just pops the
   // size-appropriate freelist, after replenishing it if it's empty.
+  
+  /*
+  >>> flowchart 3. look for object in thread cache free list
+  >>> for next step for implementation of Allocate method goto thread_cache.h
+  */
   return CheckedMallocResult(cache->Allocate(allocated_size, cl, nop_oom_handler));
 }
 
