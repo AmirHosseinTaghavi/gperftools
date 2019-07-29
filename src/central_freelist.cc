@@ -261,6 +261,11 @@ int CentralFreeList::RemoveRange(void **start, void **end, int N) {
   *start = NULL;
   *end = NULL;
   // TODO: Prefetch multiple TCEntries?
+  
+  /*
+  >>> for flowchart 7 goto implementation of FetchFromOneSpansSafe
+  >>> in this file.
+  */
   result = FetchFromOneSpansSafe(N, start, end);
   if (result != 0) {
     while (result < N) {
@@ -279,8 +284,17 @@ int CentralFreeList::RemoveRange(void **start, void **end, int N) {
 
 
 int CentralFreeList::FetchFromOneSpansSafe(int N, void **start, void **end) {
+  
+  /*
+  >>> for flowchart 7 goto implementation of FetchFromOneSpans
+  >>> in this file.
+  */
   int result = FetchFromOneSpans(N, start, end);
   if (!result) {
+    
+    /*
+    >>> for flowchart 10 goto implementation of Populate method in this file.
+    */
     Populate();
     result = FetchFromOneSpans(N, start, end);
   }
@@ -288,11 +302,24 @@ int CentralFreeList::FetchFromOneSpansSafe(int N, void **start, void **end) {
 }
 
 int CentralFreeList::FetchFromOneSpans(int N, void **start, void **end) {
+  
+  /*
+  >>> flowchart 7. is central free list of small objects empty?
+  >>> for flowchart 10 go back to FetchFromOneSpans method in this file.
+  */
   if (tcmalloc::DLL_IsEmpty(&nonempty_)) return 0;
   Span* span = nonempty_.next;
 
   ASSERT(span->objects != NULL);
 
+  /*
+  >>> flowchart 8. fetch some objects for this size class from central
+  >>> free list of small objects (shared by all threads). 
+  >>> objects return in start and end pointers.
+  >>> then return these objects with appropriate size class to thread
+  >>> through start and end pointers in RemoveRange method.
+  >>> for flowchart 9 goto FetchFromCentralCache method in thread_cache.cc file.
+  */
   int result = 0;
   void *prev, *curr;
   curr = span->objects;
@@ -326,6 +353,10 @@ void CentralFreeList::Populate() {
   Span* span;
   {
     SpinLockHolder h(Static::pageheap_lock());
+    
+    /*
+    >>> for flowchart 10 goto New method implementation in page_heap.cc file.
+    */
     span = Static::pageheap()->New(npages);
     if (span) Static::pageheap()->RegisterSizeClass(span, size_class_);
   }
@@ -345,6 +376,10 @@ void CentralFreeList::Populate() {
 
   // Split the block into pieces and add to the free-list
   // TODO: coloring of objects to avoid cache conflicts?
+  
+  /*
+  >>> flowchart 13. split run of pages into set of required size class objects
+  */
   void** tail = &span->objects;
   char* ptr = reinterpret_cast<char*>(span->start << kPageShift);
   char* limit = ptr + (npages << kPageShift);
@@ -362,6 +397,10 @@ void CentralFreeList::Populate() {
 
   // Add span to list of non-empty spans
   lock_.Lock();
+  
+  /*
+  >>> flowchart 14. place new objects in central free list of small objects
+  */
   tcmalloc::DLL_Prepend(&nonempty_, span);
   ++num_spans_;
   counter_ += num;
