@@ -376,10 +376,28 @@ inline ATTRIBUTE_ALWAYS_INLINE void* ThreadCache::Allocate(
   ASSERT(size == 0 || size == Static::sizemap()->ByteSizeForClass(cl));
 
   void* rv;
+  
+  /*
+  >>> flowchart 4. is thread cache free list empty?
+  >>> flowchart 5. remove object from thread cache free list
+  >>> process of removing object from thread cache is implemented
+  >>> in TryPop function in this file.
+  */
   if (!list->TryPop(&rv)) {
+    
+    /*
+    >>> for flowchart 7 goto implementation of FetchFromCentralCache method
+    >>> in thread_cache.cc file.
+    */
     return FetchFromCentralCache(cl, size, oom_handler);
   }
   size_ -= size;
+  
+  /*
+  >>> flowchart 6. return object to program
+  >>> object will return to do_malloc method in tcmalloc.cc
+  >>> and then return to program.
+  */
   return rv;
 }
 
