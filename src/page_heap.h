@@ -59,295 +59,309 @@
 // Because we control the definition of GetStackTrace, all clients of
 // GetStackTrace should #include us rather than stacktrace.h.
 #ifdef NO_TCMALLOC_SAMPLES
-  // We use #define so code compiles even if you #include stacktrace.h somehow.
+// We use #define so code compiles even if you #include stacktrace.h somehow.
 # define GetStackTrace(stack, depth, skip)  (0)
 #else
 # include <gperftools/stacktrace.h>
 #endif
 
 namespace base {
-struct MallocRange;
+	struct MallocRange;
 }
 
 namespace tcmalloc {
 
-// -------------------------------------------------------------------------
-// Map from page-id to per-page data
-// -------------------------------------------------------------------------
+	// -------------------------------------------------------------------------
+	// Map from page-id to per-page data
+	// -------------------------------------------------------------------------
 
-// We use PageMap2<> for 32-bit and PageMap3<> for 64-bit machines.
-// We also use a simple one-level cache for hot PageID-to-sizeclass mappings,
-// because sometimes the sizeclass is all the information we need.
+	// We use PageMap2<> for 32-bit and PageMap3<> for 64-bit machines.
+	// We also use a simple one-level cache for hot PageID-to-sizeclass mappings,
+	// because sometimes the sizeclass is all the information we need.
 
-// Selector class -- general selector uses 3-level map
-template <int BITS> class MapSelector {
- public:
-  typedef TCMalloc_PageMap3<BITS-kPageShift> Type;
-};
+	// Selector class -- general selector uses 3-level map
+	template <int BITS> class MapSelector {
+		public:
+			typedef TCMalloc_PageMap3<BITS-kPageShift> Type;
+	};
 
 #ifndef TCMALLOC_SMALL_BUT_SLOW
-// x86-64 and arm64 are using 48 bits of address space. So we can use
-// just two level map, but since initial ram consumption of this mode
-// is a bit on the higher side, we opt-out of it in
-// TCMALLOC_SMALL_BUT_SLOW mode.
-template <> class MapSelector<48> {
- public:
-  typedef TCMalloc_PageMap2<48-kPageShift> Type;
-};
+	// x86-64 and arm64 are using 48 bits of address space. So we can use
+	// just two level map, but since initial ram consumption of this mode
+	// is a bit on the higher side, we opt-out of it in
+	// TCMALLOC_SMALL_BUT_SLOW mode.
+	template <> class MapSelector<48> {
+		public:
+			typedef TCMalloc_PageMap2<48-kPageShift> Type;
+	};
 
 #endif // TCMALLOC_SMALL_BUT_SLOW
 
-// A two-level map for 32-bit machines
-template <> class MapSelector<32> {
- public:
-  typedef TCMalloc_PageMap2<32-kPageShift> Type;
-};
+	// A two-level map for 32-bit machines
+	template <> class MapSelector<32> {
+		public:
+			typedef TCMalloc_PageMap2<32-kPageShift> Type;
+	};
 
-// -------------------------------------------------------------------------
-// Page-level allocator
-//  * Eager coalescing
-//
-// Heap for page-level allocation.  We allow allocating and freeing a
-// contiguous runs of pages (called a "span").
-// -------------------------------------------------------------------------
+	// -------------------------------------------------------------------------
+	// Page-level allocator
+	//  * Eager coalescing
+	//
+	// Heap for page-level allocation.  We allow allocating and freeing a
+	// contiguous runs of pages (called a "span").
+	// -------------------------------------------------------------------------
 
-class PERFTOOLS_DLL_DECL PageHeap {
- public:
-  PageHeap();
+	class PERFTOOLS_DLL_DECL PageHeap {
+		public:
+			PageHeap();
 
-  // Allocate a run of "n" pages.  Returns zero if out of memory.
-  // Caller should not pass "n == 0" -- instead, n should have
-  // been rounded up already.
-  Span* New(Length n);
+			// Allocate a run of "n" pages.  Returns zero if out of memory.
+			// Caller should not pass "n == 0" -- instead, n should have
+			// been rounded up already.
+			Span* New(Length n);
 
-  // Delete the span "[p, p+n-1]".
-  // REQUIRES: span was returned by earlier call to New() and
-  //           has not yet been deleted.
-  void Delete(Span* span);
+			// Delete the span "[p, p+n-1]".
+			// REQUIRES: span was returned by earlier call to New() and
+			//           has not yet been deleted.
+			void Delete(Span* span);
 
-  // Mark an allocated span as being used for small objects of the
-  // specified size-class.
-  // REQUIRES: span was returned by an earlier call to New()
-  //           and has not yet been deleted.
-  void RegisterSizeClass(Span* span, uint32 sc);
+			// Mark an allocated span as being used for small objects of the
+			// specified size-class.
+			// REQUIRES: span was returned by an earlier call to New()
+			//           and has not yet been deleted.
+			void RegisterSizeClass(Span* span, uint32 sc);
 
-  // Split an allocated span into two spans: one of length "n" pages
-  // followed by another span of length "span->length - n" pages.
-  // Modifies "*span" to point to the first span of length "n" pages.
-  // Returns a pointer to the second span.
-  //
-  // REQUIRES: "0 < n < span->length"
-  // REQUIRES: span->location == IN_USE
-  // REQUIRES: span->sizeclass == 0
-  Span* Split(Span* span, Length n);
+			// Split an allocated span into two spans: one of length "n" pages
+			// followed by another span of length "span->length - n" pages.
+			// Modifies "*span" to point to the first span of length "n" pages.
+			// Returns a pointer to the second span.
+			//
+			// REQUIRES: "0 < n < span->length"
+			// REQUIRES: span->location == IN_USE
+			// REQUIRES: span->sizeclass == 0
+			Span* Split(Span* span, Length n);
 
-  // Return the descriptor for the specified page.  Returns NULL if
-  // this PageID was not allocated previously.
-  inline ATTRIBUTE_ALWAYS_INLINE
-  Span* GetDescriptor(PageID p) const {
-    return reinterpret_cast<Span*>(pagemap_.get(p));
-  }
+			// If this page heap is managing a range with starting page # >= start,
+			// store info about the range in *r and return true.  Else return false.
+			bool GetNextRange(PageID start, base::MallocRange* r);
 
-  // If this page heap is managing a range with starting page # >= start,
-  // store info about the range in *r and return true.  Else return false.
-  bool GetNextRange(PageID start, base::MallocRange* r);
 
-  // Page heap statistics
-  struct Stats {
-    Stats() : system_bytes(0), free_bytes(0), unmapped_bytes(0), committed_bytes(0),
-        scavenge_count(0), commit_count(0), total_commit_bytes(0),
-        decommit_count(0), total_decommit_bytes(0),
-        reserve_count(0), total_reserve_bytes(0) {}
-    uint64_t system_bytes;    // Total bytes allocated from system
-    uint64_t free_bytes;      // Total bytes on normal freelists
-    uint64_t unmapped_bytes;  // Total bytes on returned freelists
-    uint64_t committed_bytes;  // Bytes committed, always <= system_bytes_.
+			struct SmallSpanStats {
+				// For each free list of small spans, the length (in spans) of the
+				// normal and returned free lists for that size.
+				//
+				// NOTE: index 'i' accounts the number of spans of length 'i + 1'.
+				int64 normal_length[kMaxPages];
+				int64 returned_length[kMaxPages];
+			};
+			void GetSmallSpanStats(SmallSpanStats* result);
 
-    uint64_t scavenge_count;   // Number of times scavagened flush pages
+			bool Check();
+			// Like Check() but does some more comprehensive checking.
+			bool CheckExpensive();
+			bool CheckList(Span* list, Length min_pages, Length max_pages,
+					int freelist);  // ON_NORMAL_FREELIST or ON_RETURNED_FREELIST
+			bool CheckSet(SpanSet *s, Length min_pages, int freelist);
 
-    uint64_t commit_count;          // Number of virtual memory commits
-    uint64_t total_commit_bytes;    // Bytes committed in lifetime of process
-    uint64_t decommit_count;        // Number of virtual memory decommits
-    uint64_t total_decommit_bytes;  // Bytes decommitted in lifetime of process
 
-    uint64_t reserve_count;         // Number of virtual memory reserves
-    uint64_t total_reserve_bytes;   // Bytes reserved in lifetime of process
-  };
-  inline Stats stats() const { return stats_; }
+			// Reads and writes to pagemap_cache_ do not require locking.
+			bool TryGetSizeClass(PageID p, uint32* out) const {
+				return pagemap_cache_.TryGet(p, out);
+			}
+			void SetCachedSizeClass(PageID p, uint32 cl) {
+				ASSERT(cl != 0);
+				pagemap_cache_.Put(p, cl);
+			}
+			void InvalidateCachedSizeClass(PageID p) { pagemap_cache_.Invalidate(p); }
+			uint32 GetSizeClassOrZero(PageID p) const {
+				uint32 cached_value;
+				if (!TryGetSizeClass(p, &cached_value)) {
+					cached_value = 0;
+				}
+				return cached_value;
+			}
 
-  struct SmallSpanStats {
-    // For each free list of small spans, the length (in spans) of the
-    // normal and returned free lists for that size.
-    //
-    // NOTE: index 'i' accounts the number of spans of length 'i + 1'.
-    int64 normal_length[kMaxPages];
-    int64 returned_length[kMaxPages];
-  };
-  void GetSmallSpanStats(SmallSpanStats* result);
+			bool GetAggressiveDecommit(void) {return aggressive_decommit_;}
+			void SetAggressiveDecommit(bool aggressive_decommit) {
+				aggressive_decommit_ = aggressive_decommit;
+			}
 
-  // Stats for free large spans (i.e., spans with more than kMaxPages pages).
-  struct LargeSpanStats {
-    int64 spans;           // Number of such spans
-    int64 normal_pages;    // Combined page length of normal large spans
-    int64 returned_pages;  // Combined page length of unmapped spans
-  };
-  void GetLargeSpanStats(LargeSpanStats* result);
+			// taghavi
+			// extended memory unit nested class
+			class ExtendedMemory {
+				public:
+					ExtendedMemory();
 
-  bool Check();
-  // Like Check() but does some more comprehensive checking.
-  bool CheckExpensive();
-  bool CheckList(Span* list, Length min_pages, Length max_pages,
-                 int freelist);  // ON_NORMAL_FREELIST or ON_RETURNED_FREELIST
-  bool CheckSet(SpanSet *s, Length min_pages, int freelist);
+					// Allocate a large span of length == n.  If successful, returns a
+					// span of exactly the specified length.  Else, returns NULL.
+					Span* AllocLarge(Length n);
 
-  // Try to release at least num_pages for reuse by the OS.  Returns
-  // the actual number of pages released, which may be less than
-  // num_pages if there weren't enough pages to release. The result
-  // may also be larger than num_pages since page_heap might decide to
-  // release one large range instead of fragmenting it into two
-  // smaller released and unreleased ranges.
-  Length ReleaseAtLeastNPages(Length num_pages);
+					// Return the descriptor for the specified page.  Returns NULL if
+					// this PageID was not allocated previously.
+					inline ATTRIBUTE_ALWAYS_INLINE
+									Span* GetDescriptor(PageID p) const {
+													return reinterpret_cast<Span*>(pagemap_.get(p));
+									}
 
-  // Reads and writes to pagemap_cache_ do not require locking.
-  bool TryGetSizeClass(PageID p, uint32* out) const {
-    return pagemap_cache_.TryGet(p, out);
-  }
-  void SetCachedSizeClass(PageID p, uint32 cl) {
-    ASSERT(cl != 0);
-    pagemap_cache_.Put(p, cl);
-  }
-  void InvalidateCachedSizeClass(PageID p) { pagemap_cache_.Invalidate(p); }
-  uint32 GetSizeClassOrZero(PageID p) const {
-    uint32 cached_value;
-    if (!TryGetSizeClass(p, &cached_value)) {
-      cached_value = 0;
-    }
-    return cached_value;
-  }
+					bool Check();
 
-  bool GetAggressiveDecommit(void) {return aggressive_decommit_;}
-  void SetAggressiveDecommit(bool aggressive_decommit) {
-    aggressive_decommit_ = aggressive_decommit;
-  }
+					// Page heap statistics
+					struct Stats {
+									Stats() : system_bytes(0), free_bytes(0), unmapped_bytes(0), committed_bytes(0),
+									scavenge_count(0), commit_count(0), total_commit_bytes(0),
+									decommit_count(0), total_decommit_bytes(0),
+									reserve_count(0), total_reserve_bytes(0) {}
+									uint64_t system_bytes;    // Total bytes allocated from system
+									uint64_t free_bytes;      // Total bytes on normal freelists
+									uint64_t unmapped_bytes;  // Total bytes on returned freelists
+									uint64_t committed_bytes;  // Bytes committed, always <= system_bytes_.
 
- private:
-  // Allocates a big block of memory for the pagemap once we reach more than
-  // 128MB
-  static const size_t kPageMapBigAllocationThreshold = 128 << 20;
+									uint64_t scavenge_count;   // Number of times scavagened flush pages
 
-  // Minimum number of pages to fetch from system at a time.  Must be
-  // significantly bigger than kBlockSize to amortize system-call
-  // overhead, and also to reduce external fragementation.  Also, we
-  // should keep this value big because various incarnations of Linux
-  // have small limits on the number of mmap() regions per
-  // address-space.
-  // REQUIRED: kMinSystemAlloc <= kMaxPages;
-  static const int kMinSystemAlloc = kMaxPages;
+									uint64_t commit_count;          // Number of virtual memory commits
+									uint64_t total_commit_bytes;    // Bytes committed in lifetime of process
+									uint64_t decommit_count;        // Number of virtual memory decommits
+									uint64_t total_decommit_bytes;  // Bytes decommitted in lifetime of process
 
-  // Never delay scavenging for more than the following number of
-  // deallocated pages.  With 4K pages, this comes to 4GB of
-  // deallocation.
-  static const int kMaxReleaseDelay = 1 << 20;
+									uint64_t reserve_count;         // Number of virtual memory reserves
+									uint64_t total_reserve_bytes;   // Bytes reserved in lifetime of process
+					};
+					inline Stats stats() const { return stats_; }
 
-  // If there is nothing to release, wait for so many pages before
-  // scavenging again.  With 4K pages, this comes to 1GB of memory.
-  static const int kDefaultReleaseDelay = 1 << 18;
+					// Try to release at least num_pages for reuse by the OS.  Returns
+					// the actual number of pages released, which may be less than
+					// num_pages if there weren't enough pages to release. The result
+					// may also be larger than num_pages since page_heap might decide to
+					// release one large range instead of fragmenting it into two
+					// smaller released and unreleased ranges.
+					Length ReleaseAtLeastNPages(Length num_pages);
+				private:
+					// Sets of spans with length > kMaxPages.
+					//
+					// Rather than using a linked list, we use sets here for efficient
+					// best-fit search.
+					SpanSet large_normal_;
+					SpanSet large_returned_;
 
-  // Pick the appropriate map and cache types based on pointer size
-  typedef MapSelector<kAddressBits>::Type PageMap;
-  typedef PackedCache<kAddressBits - kPageShift> PageMapCache;
-  mutable PageMapCache pagemap_cache_;
-  PageMap pagemap_;
+					// Pick the appropriate map and cache types based on pointer size
+					typedef MapSelector<kAddressBits>::Type PageMap;
+					typedef PackedCache<kAddressBits - kPageShift> PageMapCache;
+					mutable PageMapCache pagemap_cache_;
+					PageMap pagemap_;
 
-  // We segregate spans of a given size into two circular linked
-  // lists: one for normal spans, and one for spans whose memory
-  // has been returned to the system.
-  struct SpanList {
-    Span        normal;
-    Span        returned;
-  };
+					bool GrowHeap(Length n);
 
-  // Sets of spans with length > kMaxPages.
-  //
-  // Rather than using a linked list, we use sets here for efficient
-  // best-fit search.
-  SpanSet large_normal_;
-  SpanSet large_returned_;
+					// return span.
+					Span* CarveLarge(Span* span, Length n);
 
-  // Array mapping from span length to a doubly linked list of free spans
-  //
-  // NOTE: index 'i' stores spans of length 'i + 1'.
-  SpanList free_[kMaxPages];
+					// Removes span from its free list, and adjust stats.
+					void RemoveFromFreeSet(Span* span);
 
-  // Statistics on system, free, and unmapped bytes
-  Stats stats_;
+					void RecordSpan(Span* span) {
+									pagemap_.set(span->start, span);
+									if (span->length > 1) {
+													pagemap_.set(span->start + span->length - 1, span);
+									}
+					}
 
-  Span* SearchFreeAndLargeLists(Length n);
+					// Prepends span to appropriate free list, and adjusts stats.
+					void PrependToFreeSet(Span* span);
 
-  bool GrowHeap(Length n);
+					// Commit the span.
+					void CommitSpan(Span* span);
 
-  // REQUIRES: span->length >= n
-  // REQUIRES: span->location != IN_USE
-  // Remove span from its free list, and move any leftover part of
-  // span into appropriate free lists.  Also update "span" to have
-  // length exactly "n" and mark it as non-free so it can be returned
-  // to the client.  After all that, decrease free_pages_ by n and
-  // return span.
-  Span* Carve(Span* span, Length n);
+					// Checks if we are allowed to take more memory from the system.
+					// If limit is reached and allowRelease is true, tries to release
+					// some unused spans.
+					bool EnsureLimit(Length n, bool allowRelease = true);
 
-  void RecordSpan(Span* span) {
-    pagemap_.set(span->start, span);
-    if (span->length > 1) {
-      pagemap_.set(span->start + span->length - 1, span);
-    }
-  }
+					// Attempts to decommit 's' and move it to the returned freelist.
+					//
+					// Returns the length of the Span or zero if release failed.
+					//
+					// REQUIRES: 's' must be on the NORMAL freelist.
+					Length ReleaseSpan(Span *s);
 
-  // Allocate a large span of length == n.  If successful, returns a
-  // span of exactly the specified length.  Else, returns NULL.
-  Span* AllocLarge(Length n);
+					// Decommit the span.
+					bool DecommitSpan(Span* span);
 
-  // Coalesce span with neighboring spans if possible, prepend to
-  // appropriate free list, and adjust stats.
-  void MergeIntoFreeList(Span* span);
+					// Coalesce span with neighboring spans if possible, prepend to
+					// appropriate free list, and adjust stats.
+					void MergeIntoFreeSet(Span* span);
 
-  // Commit the span.
-  void CommitSpan(Span* span);
+					Span* CheckAndHandlePreMerge(Span *span, Span *other);
+			};
 
-  // Decommit the span.
-  bool DecommitSpan(Span* span);
+		private:
+			// Allocates a big block of memory for the pagemap once we reach more than
+			// 128MB
+			static const size_t kPageMapBigAllocationThreshold = 128 << 20;
 
-  // Prepends span to appropriate free list, and adjusts stats.
-  void PrependToFreeList(Span* span);
+			// Minimum number of pages to fetch from system at a time.  Must be
+			// significantly bigger than kBlockSize to amortize system-call
+			// overhead, and also to reduce external fragementation.  Also, we
+			// should keep this value big because various incarnations of Linux
+			// have small limits on the number of mmap() regions per
+			// address-space.
+			// REQUIRED: kMinSystemAlloc <= kMaxPages;
+			static const int kMinSystemAlloc = kMaxPages;
 
-  // Removes span from its free list, and adjust stats.
-  void RemoveFromFreeList(Span* span);
+			// Never delay scavenging for more than the following number of
+			// deallocated pages.  With 4K pages, this comes to 4GB of
+			// deallocation.
+			static const int kMaxReleaseDelay = 1 << 20;
 
-  // Incrementally release some memory to the system.
-  // IncrementalScavenge(n) is called whenever n pages are freed.
-  void IncrementalScavenge(Length n);
+			// If there is nothing to release, wait for so many pages before
+			// scavenging again.  With 4K pages, this comes to 1GB of memory.
+			static const int kDefaultReleaseDelay = 1 << 18;
 
-  // Attempts to decommit 's' and move it to the returned freelist.
-  //
-  // Returns the length of the Span or zero if release failed.
-  //
-  // REQUIRES: 's' must be on the NORMAL freelist.
-  Length ReleaseSpan(Span *s);
 
-  // Checks if we are allowed to take more memory from the system.
-  // If limit is reached and allowRelease is true, tries to release
-  // some unused spans.
-  bool EnsureLimit(Length n, bool allowRelease = true);
+			// We segregate spans of a given size into two circular linked
+			// lists: one for normal spans, and one for spans whose memory
+			// has been returned to the system.
+			struct SpanList {
+				Span        normal;
+				Span        returned;
+			};
 
-  Span* CheckAndHandlePreMerge(Span *span, Span *other);
+			// Array mapping from span length to a doubly linked list of free spans
+			//
+			// NOTE: index 'i' stores spans of length 'i + 1'.
+			SpanList free_[kMaxPages];
 
-  // Number of pages to deallocate before doing more scavenging
-  int64_t scavenge_counter_;
+			// Statistics on system, free, and unmapped bytes
+			Stats stats_;
 
-  // Index of last free list where we released memory to the OS.
-  int release_index_;
+			Span* SearchFreeAndLargeLists(Length n);
 
-  bool aggressive_decommit_;
-};
+
+			// REQUIRES: span->length >= n
+			// REQUIRES: span->location != IN_USE
+			// Remove span from its free list, and move any leftover part of
+			// span into appropriate free lists.  Also update "span" to have
+			// length exactly "n" and mark it as non-free so it can be returned
+			// to the client.  After all that, decrease free_pages_ by n and
+			// return span.
+			Span* Carve(Span* span, Length n);
+
+			// Prepends span to appropriate free list, and adjusts stats.
+			void PrependToFreeList(Span* span);
+
+			// Removes span from its free list, and adjust stats.
+			void RemoveFromFreeList(Span* span);
+
+			// Incrementally release some memory to the system.
+			// IncrementalScavenge(n) is called whenever n pages are freed.
+			void IncrementalScavenge(Length n);
+
+			// Number of pages to deallocate before doing more scavenging
+			int64_t scavenge_counter_;
+
+			// Index of last free list where we released memory to the OS.
+			int release_index_;
+
+			bool aggressive_decommit_;
+	};
 
 }  // namespace tcmalloc
 
