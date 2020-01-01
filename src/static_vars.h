@@ -72,7 +72,10 @@ class Static {
   // Page-level allocator.
   static PageHeap* pageheap() { return reinterpret_cast<PageHeap *>(&pageheap_.memory); }
 
-  static PageHeapAllocator<Span>* span_allocator() { return &span_allocator_; }
+  static PageHeap::ExtendedMemory* extended_memory() { return reinterpret_cast<PageHeap::ExtendedMemory *>(&extended_memory_.memory); }
+  static PageHeap::PageMap* pagemap() { return reinterpret_cast<PageHeap::PageMap *>(&pagemap_.memory); }
+  
+	static PageHeapAllocator<Span>* span_allocator() { return &span_allocator_; }
 
   static PageHeapAllocator<StackTrace>* stacktrace_allocator() {
     return &stacktrace_allocator_;
@@ -119,6 +122,18 @@ class Static {
     uintptr_t extra;  // To force alignment
   };
   ATTRIBUTE_HIDDEN static PageHeapStorage pageheap_;
+
+  union ExtendedMemoryStorage {
+    char memory[sizeof(PageHeap::ExtendedMemory)];
+    uintptr_t extra;  // To force alignment
+  };
+  ATTRIBUTE_HIDDEN static ExtendedMemoryStorage extended_memory_;
+ 
+ 	union PageMapStorage {
+    char memory[sizeof(PageHeap::PageMap)];
+    uintptr_t extra;  // To force alignment
+  };
+  ATTRIBUTE_HIDDEN static PageMapStorage pagemap_;
 };
 
 }  // namespace tcmalloc

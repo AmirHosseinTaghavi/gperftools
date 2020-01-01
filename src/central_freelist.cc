@@ -97,7 +97,7 @@ __attribute__ ((noinline))
 #endif
 Span* MapObjectToSpan(void* object) {
   const PageID p = reinterpret_cast<uintptr_t>(object) >> kPageShift;
-  Span* span = Static::pageheap()->GetDescriptor(p);
+  Span* span = Static::pagemap()->GetDescriptor(p);
   return span;
 }
 
@@ -139,7 +139,7 @@ void CentralFreeList::ReleaseToSpans(void* object) {
     lock_.Unlock();
     {
       SpinLockHolder h(Static::pageheap_lock());
-      Static::pageheap()->Delete(span);
+      Static::extended_memory()->Delete(span);
     }
     lock_.Lock();
   } else {
@@ -358,7 +358,7 @@ void CentralFreeList::Populate() {
     >>> for flowchart 10 goto New method implementation in page_heap.cc file.
     */
     span = Static::pageheap()->New(npages);
-    if (span) Static::pageheap()->RegisterSizeClass(span, size_class_);
+    if (span) Static::pagemap()->RegisterSizeClass(span, size_class_);
   }
   if (span == NULL) {
     Log(kLog, __FILE__, __LINE__,
@@ -371,7 +371,7 @@ void CentralFreeList::Populate() {
   // (Instead of being eager, we could just replace any stale info
   // about this span, but that seems to be no better in practice.)
   for (int i = 0; i < npages; i++) {
-    Static::pageheap()->SetCachedSizeClass(span->start + i, size_class_);
+    Static::pagemap()->SetCachedSizeClass(span->start + i, size_class_);
   }
 
   // Split the block into pieces and add to the free-list

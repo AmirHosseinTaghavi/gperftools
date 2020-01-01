@@ -76,6 +76,8 @@ PageHeapAllocator<StackTrace> Static::stacktrace_allocator_;
 Span Static::sampled_objects_;
 StackTrace* Static::growth_stacks_ = NULL;
 Static::PageHeapStorage Static::pageheap_;
+Static::ExtendedMemoryStorage Static::extended_memory_;
+Static::PageMapStorage Static::pagemap_;
 
 void Static::InitStaticVars() {
   sizemap_.Init();
@@ -90,6 +92,8 @@ void Static::InitStaticVars() {
   }
 
   new (&pageheap_.memory) PageHeap;
+  new (&extended_memory_.memory) PageHeap::ExtendedMemory;
+  new (&pagemap_.memory) PageHeap::PageMap;
 
 #if defined(ENABLE_AGGRESSIVE_DECOMMIT_BY_DEFAULT)
   const bool kDefaultAggressiveDecommit = true;
@@ -103,7 +107,7 @@ void Static::InitStaticVars() {
       TCMallocGetenvSafe("TCMALLOC_AGGRESSIVE_DECOMMIT"),
                          kDefaultAggressiveDecommit);
 
-  pageheap()->SetAggressiveDecommit(aggressive_decommit);
+  extended_memory()->SetAggressiveDecommit(aggressive_decommit);
 
   inited_ = true;
 

@@ -62,228 +62,86 @@ DEFINE_int64(tcmalloc_heap_limit_mb,
 
 namespace tcmalloc {
 
-PageHeap::PageHeap()
-    : pagemap_(MetaDataAlloc),
-      scavenge_counter_(0),
-      // Start scavenging at kMaxPages list
-      release_index_(kMaxPages),
-      aggressive_decommit_(false) {
-  COMPILE_ASSERT(kClassSizesMax <= (1 << PageMapCache::kValuebits), valuebits);
-  for (int i = 0; i < kMaxPages; i++) {
-    DLL_Init(&free_[i].normal);
-    DLL_Init(&free_[i].returned);
-  }
+PageHeap::PageHeap() {
+	DLL_Init(&free_[i].normal);
+	DLL_Init(&free_[i].returned);
 }
-
-Span* PageHeap::SearchFreeAndLargeLists(Length n) {
-  ASSERT(Check());
-  ASSERT(n > 0);
-
-  // Find first size >= n that has a non-empty list
-  for (Length s = n; s <= kMaxPages; s++) {
-    Span* ll = &free_[s - 1].normal;
-    // If we're lucky, ll is non-empty, meaning it has a suitable span.
-    
-    /*
-    >>> flowchart 10. is page heap linked list empty?
-    >>> flowchart 11. look for n run of pages (n is requested from last step) 
-    */
-    if (!DLL_IsEmpty(ll)) {
-      ASSERT(ll->next->location == Span::ON_NORMAL_FREELIST);
-      
-      /*
-      >>> flowchart 12. carve run of pages according to n
-      >>> for more info about carve method goto Carve method impl in this file.
-      >> for flowchart 13 go back to Populate method in central_freelist.cc file.
-      */
-      return Carve(ll->next, n);
-    }
-    // Alternatively, maybe there's a usable returned span.
-    ll = &free_[s - 1].returned;
-    if (!DLL_IsEmpty(ll)) {
-      // We did not call EnsureLimit before, to avoid releasing the span
-      // that will be taken immediately back.
-      // Calling EnsureLimit here is not very expensive, as it fails only if
-      // there is no more normal spans (and it fails efficiently)
-      // or SystemRelease does not work (there is probably no returned spans).
-      if (EnsureLimit(n)) {
-        // ll may have became empty due to coalescing
-        if (!DLL_IsEmpty(ll)) {
-          ASSERT(ll->next->location == Span::ON_RETURNED_FREELIST);
-          return Carve(ll->next, n);
-        }
-      }
-    }
-  }
-  // No luck in free lists, our last chance is in a larger class.
-  
-  /*
-  >>> for flowchart 15 goto implementation of AllocLarge function in this file.
-  */
-  return AllocLarge(n);  // May be NULL
-}
-
-static const size_t kForcedCoalesceInterval = 128*1024*1024;
 
 Span* PageHeap::New(Length n) {
   ASSERT(Check());
   ASSERT(n > 0);
-
-  /*
-  >>> for flowchart 10 goto implementation of SearchFreeAndLargeLists in this file.
-  */
-  Span* result = SearchFreeAndLargeLists(n);
-  if (result != NULL)
-    return result;
-
-  if (stats_.free_bytes != 0 && stats_.unmapped_bytes != 0
-      && stats_.free_bytes + stats_.unmapped_bytes >= stats_.system_bytes / 4
-      && (stats_.system_bytes / kForcedCoalesceInterval
-          != (stats_.system_bytes + (n << kPageShift)) / kForcedCoalesceInterval)) {
-    // We're about to grow heap, but there are lots of free pages.
-    // tcmalloc's design decision to keep unmapped and free spans
-    // separately and never coalesce them means that sometimes there
-    // can be free pages span of sufficient size, but it consists of
-    // "segments" of different type so page heap search cannot find
-    // it. In order to prevent growing heap and wasting memory in such
-    // case we're going to unmap all free pages. So that all free
-    // spans are maximally coalesced.
-    //
-    // We're also limiting 'rate' of going into this path to be at
-    // most once per 128 megs of heap growth. Otherwise programs that
-    // grow heap frequently (and that means by small amount) could be
-    // penalized with higher count of minor page faults.
-    //
-    // See also large_heap_fragmentation_unittest.cc and
-    // https://code.google.com/p/gperftools/issues/detail?id=368
-    ReleaseAtLeastNPages(static_cast<Length>(0x7fffffff));
-
-    // then try again. If we are forced to grow heap because of large
-    // spans fragmentation and not because of problem described above,
-    // then at the very least we've just unmapped free but
-    // insufficiently big large spans back to OS. So in case of really
-    // unlucky memory fragmentation we'll be consuming virtual address
-    // space, but not real memory
-    result = SearchFreeAndLargeLists(n);
-    if (result != NULL) return result;
-  }
-
-  // Grow the heap and try again.
   
-  /*
-  >>> for flowchart 18 goto implementation of GrowHeap method in this file.
-  */
-  if (!GrowHeap(n)) {
-    ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
-    ASSERT(Check());
-    // underlying SysAllocator likely set ENOMEM but we can get here
-    // due to EnsureLimit so we set it here too.
-    //
-    // Setting errno to ENOMEM here allows us to avoid dealing with it
-    // in fast-path.
-    errno = ENOMEM;
-    return NULL;
-  }
-  return SearchFreeAndLargeLists(n);
-}
+	if (n > 8){
+		int freelist_items = n / FreeListItemSize;	
+		return Static::extended_memory()->AllocLarge((freelist_items+1)*FreeListItemSize);
+	}
 
-Span* PageHeap::Split(Span* span, Length n) {
-  ASSERT(0 < n);
-  ASSERT(n < span->length);
-  ASSERT(span->location == Span::IN_USE);
-  ASSERT(span->sizeclass == 0);
-  Event(span, 'T', n);
+	Span* ll = &free_.normal;
+	if (!DLL_IsEmpty(ll)) {
+					Span* span = ll->next;
+					ASSERT(span->location == Span::ON_NORMAL_FREELIST);
+					ASSERT(span->location != Span::IN_USE);
+					RemoveFromFreeList(span);
+					span->location = Span::IN_USE;
+					return span;
+	}
+	// Alternatively, maybe there's a usable returned span.
+	ll = &free_.returned;
+	if (!DLL_IsEmpty(ll)) {
+					ASSERT(ll->next->location == Span::ON_RETURNED_FREELIST);
+					Span* span = ll->next;
+					ASSERT(span->location != Span::IN_USE);
+					RemoveFromFreeList(span);
+					span->location = Span::IN_USE;
+					return span;
+	}
+  
+	// No luck in free lists, our last chance is in a larger class.
+  
+	Span* large_span = Static::extended_memory()->AllocLarge(3*FreeListItemSize); 
+	if (large_span != NULL){
+					ASSERT(large_span->location != Span::IN_USE);
+					const int old_location = large_span->location;
+					large_span->location = Span::IN_USE;
+					Event(large_span, 'A', 3*FreeListItemSize);
 
-  const int extra = span->length - n;
-  Span* leftover = NewSpan(span->start + n, extra);
-  ASSERT(leftover->location == Span::IN_USE);
-  Event(leftover, 'U', extra);
-  RecordSpan(leftover);
-  pagemap_.set(span->start + n - 1, span); // Update map from pageid to span
-  span->length = n;
+					int large_span_items = large_span->length / FreeListItemSize; 
+					for (int i=1; i<large_span_items; i++) {
+									Span* new_span = NewSpan(large_span->start + i*FreeListItemSize, FreeListItemSize);
+									new_span->location = old_location;
+									Event(new_span, 'S', FreeListItemSize);
+									Static::pagemap()->RecordSpan(new_span);
 
-  return leftover;
-}
-
-Span* PageHeap::Carve(Span* span, Length n) {
-  ASSERT(n > 0);
-  ASSERT(span->location != Span::IN_USE);
-  const int old_location = span->location;
-  RemoveFromFreeList(span);
-  span->location = Span::IN_USE;
-  Event(span, 'A', n);
-
-  const int extra = span->length - n;
-  ASSERT(extra >= 0);
-  if (extra > 0) {
-    Span* leftover = NewSpan(span->start + n, extra);
-    leftover->location = old_location;
-    Event(leftover, 'S', extra);
-    RecordSpan(leftover);
-
-    // The previous span of |leftover| was just splitted -- no need to
-    // coalesce them. The next span of |leftover| was not previously coalesced
-    // with |span|, i.e. is NULL or has got location other than |old_location|.
 #ifndef NDEBUG
-    const PageID p = leftover->start;
-    const Length len = leftover->length;
-    Span* next = GetDescriptor(p+len);
-    ASSERT (next == NULL ||
-            next->location == Span::IN_USE ||
-            next->location != leftover->location);
+									const PageID p = new_span->start;
+									const Length len = new_span->length;
+									Span* next = Static::pagemap()->GetDescriptor(p+len);
+									ASSERT (next == NULL ||
+																	next->location == Span::IN_USE ||
+																	next->location != new_span->location);
 #endif
 
-    PrependToFreeList(leftover);  // Skip coalescing - no candidates possible
-    span->length = n;
-    pagemap_.set(span->start + n - 1, span);
-  }
-  ASSERT(Check());
-  if (old_location == Span::ON_RETURNED_FREELIST) {
-    // We need to recommit this address space.
-    CommitSpan(span);
-  }
-  ASSERT(span->location == Span::IN_USE);
-  ASSERT(span->length == n);
-  ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
-  return span;
-}
-
-void PageHeap::Delete(Span* span) {
-  ASSERT(Check());
-  ASSERT(span->location == Span::IN_USE);
-  ASSERT(span->length > 0);
-  ASSERT(GetDescriptor(span->start) == span);
-  ASSERT(GetDescriptor(span->start + span->length - 1) == span);
-  const Length n = span->length;
-  span->sizeclass = 0;
-  span->sample = 0;
-  span->location = Span::ON_NORMAL_FREELIST;
-  Event(span, 'D', span->length);
-  MergeIntoFreeList(span);  // Coalesces if possible
-  IncrementalScavenge(n);
-  ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
-  ASSERT(Check());
+									PrependToFreeList(new_span);  // Skip coalescing - no candidates possible
+					}
+					large_span->length = FreeListItemSize;
+					Static::pagemap()->SetPageMap(large_span->start + FreeListItemSize - 1, large_span);
+					ASSERT(Check());
+					if (old_location == Span::ON_RETURNED_FREELIST) {
+									Static::pagemap()->CommitSpan(large_span);
+					}
+					PrependToFreeList(large_span);
+	}
+	return New(n)
 }
 
 void PageHeap::PrependToFreeList(Span* span) {
   ASSERT(span->location != Span::IN_USE);
   if (span->location == Span::ON_NORMAL_FREELIST)
-    stats_.free_bytes += (span->length << kPageShift);
+		Static::pagemap()->AddFreeBytes(span->length << kPageShift);
   else
-    stats_.unmapped_bytes += (span->length << kPageShift);
+    Static::pagemap()->AddUnmappedBytes(span->length << kPageShift);
 
-  if (span->length > kMaxPages) {
-    SpanSet *set = &large_normal_;
-    if (span->location == Span::ON_RETURNED_FREELIST)
-      set = &large_returned_;
-    std::pair<SpanSet::iterator, bool> p =
-        set->insert(SpanPtrWithLength(span));
-    ASSERT(p.second); // We never have duplicates since span->start is unique.
-    span->SetSpanSetIterator(p.first);
-    return;
-  }
-
-  SpanList* list = &free_[span->length - 1];
+  SpanList* list = &free_;
   if (span->location == Span::ON_NORMAL_FREELIST) {
     DLL_Prepend(&list->normal, span);
   } else {
@@ -293,203 +151,17 @@ void PageHeap::PrependToFreeList(Span* span) {
 
 void PageHeap::RemoveFromFreeList(Span* span) {
   ASSERT(span->location != Span::IN_USE);
-  if (span->location == Span::ON_NORMAL_FREELIST) {
-    stats_.free_bytes -= (span->length << kPageShift);
+	if (span->location == Span::ON_NORMAL_FREELIST) {
+					Static::pagemap()->ReduceFreeBytes(span->length << kPageShift);
   } else {
-    stats_.unmapped_bytes -= (span->length << kPageShift);
+					Static::pagemap()->ReduceUnmappedBytes(span->length << kPageShift);
   }
-  if (span->length > kMaxPages) {
-    SpanSet *set = &large_normal_;
-    if (span->location == Span::ON_RETURNED_FREELIST)
-      set = &large_returned_;
-    SpanSet::iterator iter = span->ExtractSpanSetIterator();
-    ASSERT(iter->span == span);
-    ASSERT(set->find(SpanPtrWithLength(span)) == iter);
-    set->erase(iter);
-  } else {
-    DLL_Remove(span);
-  }
-}
-
-void PageHeap::IncrementalScavenge(Length n) {
-  // Fast path; not yet time to release memory
-  scavenge_counter_ -= n;
-  if (scavenge_counter_ >= 0) return;  // Not yet time to scavenge
-
-  const double rate = FLAGS_tcmalloc_release_rate;
-  if (rate <= 1e-6) {
-    // Tiny release rate means that releasing is disabled.
-    scavenge_counter_ = kDefaultReleaseDelay;
-    return;
-  }
-
-  ++stats_.scavenge_count;
-
-  Length released_pages = ReleaseAtLeastNPages(1);
-
-  if (released_pages == 0) {
-    // Nothing to scavenge, delay for a while.
-    scavenge_counter_ = kDefaultReleaseDelay;
-  } else {
-    // Compute how long to wait until we return memory.
-    // FLAGS_tcmalloc_release_rate==1 means wait for 1000 pages
-    // after releasing one page.
-    const double mult = 1000.0 / rate;
-    double wait = mult * static_cast<double>(released_pages);
-    if (wait > kMaxReleaseDelay) {
-      // Avoid overflow and bound to reasonable range.
-      wait = kMaxReleaseDelay;
-    }
-    scavenge_counter_ = static_cast<int64_t>(wait);
-  }
-}
-
-
-void PageHeap::RegisterSizeClass(Span* span, uint32 sc) {
-  // Associate span object with all interior pages as well
-  ASSERT(span->location == Span::IN_USE);
-  ASSERT(GetDescriptor(span->start) == span);
-  ASSERT(GetDescriptor(span->start+span->length-1) == span);
-  Event(span, 'C', sc);
-  span->sizeclass = sc;
-  for (Length i = 1; i < span->length-1; i++) {
-    pagemap_.set(span->start+i, span);
-  }
+	DLL_Remove(span);
 }
 
 void PageHeap::GetSmallSpanStats(SmallSpanStats* result) {
-  for (int i = 0; i < kMaxPages; i++) {
-    result->normal_length[i] = DLL_Length(&free_[i].normal);
-    result->returned_length[i] = DLL_Length(&free_[i].returned);
-  }
-}
-
-void PageHeap::GetLargeSpanStats(LargeSpanStats* result) {
-  result->spans = 0;
-  result->normal_pages = 0;
-  result->returned_pages = 0;
-  for (SpanSet::iterator it = large_normal_.begin(); it != large_normal_.end(); ++it) {
-    result->normal_pages += it->length;
-    result->spans++;
-  }
-  for (SpanSet::iterator it = large_returned_.begin(); it != large_returned_.end(); ++it) {
-    result->returned_pages += it->length;
-    result->spans++;
-  }
-}
-
-bool PageHeap::GetNextRange(PageID start, base::MallocRange* r) {
-  Span* span = reinterpret_cast<Span*>(pagemap_.Next(start));
-  if (span == NULL) {
-    return false;
-  }
-  r->address = span->start << kPageShift;
-  r->length = span->length << kPageShift;
-  r->fraction = 0;
-  switch (span->location) {
-    case Span::IN_USE:
-      r->type = base::MallocRange::INUSE;
-      r->fraction = 1;
-      if (span->sizeclass > 0) {
-        // Only some of the objects in this span may be in use.
-        const size_t osize = Static::sizemap()->class_to_size(span->sizeclass);
-        r->fraction = (1.0 * osize * span->refcount) / r->length;
-      }
-      break;
-    case Span::ON_NORMAL_FREELIST:
-      r->type = base::MallocRange::FREE;
-      break;
-    case Span::ON_RETURNED_FREELIST:
-      r->type = base::MallocRange::UNMAPPED;
-      break;
-    default:
-      r->type = base::MallocRange::UNKNOWN;
-      break;
-  }
-  return true;
-}
-
-static void RecordGrowth(size_t growth) {
-  StackTrace* t = Static::stacktrace_allocator()->New();
-  t->depth = GetStackTrace(t->stack, kMaxStackDepth-1, 3);
-  t->size = growth;
-  t->stack[kMaxStackDepth-1] = reinterpret_cast<void*>(Static::growth_stacks());
-  Static::set_growth_stacks(t);
-}
-
-bool PageHeap::GrowHeap(Length n) {
-  ASSERT(kMaxPages >= kMinSystemAlloc);
-  if (n > kMaxValidPages) return false;
-  Length ask = (n>kMinSystemAlloc) ? n : static_cast<Length>(kMinSystemAlloc);
-  size_t actual_size;
-  void* ptr = NULL;
-  if (EnsureLimit(ask)) {
-      
-      /*
-      >>> flowchart 18. grow heap by  requesting  m size of bytes that is multiple 
-      >>> size of n pages. for more info about allocating by system calls goto
-      >>> implementation of TCMalloc_SystemAlloc in system_alloc.cc file.
-      */
-      ptr = TCMalloc_SystemAlloc(ask << kPageShift, &actual_size, kPageSize);
-  }
-  if (ptr == NULL) {
-    if (n < ask) {
-      // Try growing just "n" pages
-      ask = n;
-      if (EnsureLimit(ask)) {
-        ptr = TCMalloc_SystemAlloc(ask << kPageShift, &actual_size, kPageSize);
-      }
-    }
-    if (ptr == NULL) return false;
-  }
-  ask = actual_size >> kPageShift;
-  RecordGrowth(ask << kPageShift);
-
-  ++stats_.reserve_count;
-  ++stats_.commit_count;
-
-  uint64_t old_system_bytes = stats_.system_bytes;
-  stats_.system_bytes += (ask << kPageShift);
-  stats_.committed_bytes += (ask << kPageShift);
-
-  stats_.total_commit_bytes += (ask << kPageShift);
-  stats_.total_reserve_bytes += (ask << kPageShift);
-
-  const PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
-  ASSERT(p > 0);
-
-  // If we have already a lot of pages allocated, just pre allocate a bunch of
-  // memory for the page map. This prevents fragmentation by pagemap metadata
-  // when a program keeps allocating and freeing large blocks.
-
-  if (old_system_bytes < kPageMapBigAllocationThreshold
-      && stats_.system_bytes >= kPageMapBigAllocationThreshold) {
-    pagemap_.PreallocateMoreMemory();
-  }
-
-  // Make sure pagemap_ has entries for all of the new pages.
-  // Plus ensure one before and one after so coalescing code
-  // does not need bounds-checking.
-  if (pagemap_.Ensure(p-1, ask+2)) {
-    // Pretend the new area is allocated and then Delete() it to cause
-    // any necessary coalescing to occur.
-    
-    /*
-    >>> flowchart 19. add span with size m to page heap free linked list of spans
-    >>> or page heap spanset of large spans. for more info goto impl of 
-    >>> NewSpan and Delete method in this file.
-    */
-    Span* span = NewSpan(p, ask);
-    RecordSpan(span);
-    Delete(span);
-    ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
-    ASSERT(Check());
-    return true;
-  } else {
-    // We could not allocate memory within "pagemap_"
-    // TODO: Once we can return memory to the system, return the new span
-    return false;
-  }
+				result->normal_length = DLL_Length(&free_.normal);
+				result->returned_length = DLL_Length(&free_.returned);
 }
 
 bool PageHeap::Check() {
@@ -498,43 +170,31 @@ bool PageHeap::Check() {
 
 bool PageHeap::CheckExpensive() {
   bool result = Check();
-  CheckSet(&large_normal_, kMaxPages + 1, Span::ON_NORMAL_FREELIST);
-  CheckSet(&large_returned_, kMaxPages + 1, Span::ON_RETURNED_FREELIST);
-  for (int s = 1; s <= kMaxPages; s++) {
-    CheckList(&free_[s - 1].normal, s, s, Span::ON_NORMAL_FREELIST);
-    CheckList(&free_[s - 1].returned, s, s, Span::ON_RETURNED_FREELIST);
-  }
+	Static::extended_memory()->CheckSet(&large_normal_, Span::ON_NORMAL_FREELIST);
+	Static::extended_memory()->CheckSet(&large_returned_, Span::ON_RETURNED_FREELIST);
+	CheckList(&free_.normal, Span::ON_NORMAL_FREELIST);
+	CheckList(&free_.returned, Span::ON_RETURNED_FREELIST);
   return result;
 }
 
-bool PageHeap::CheckList(Span* list, Length min_pages, Length max_pages,
-                         int freelist) {
+bool PageHeap::CheckList(Span* list, int freelist) {
   for (Span* s = list->next; s != list; s = s->next) {
     CHECK_CONDITION(s->location == freelist);  // NORMAL or RETURNED
-    CHECK_CONDITION(s->length >= min_pages);
-    CHECK_CONDITION(s->length <= max_pages);
-    CHECK_CONDITION(GetDescriptor(s->start) == s);
-    CHECK_CONDITION(GetDescriptor(s->start+s->length-1) == s);
-  }
-  return true;
-}
-
-bool PageHeap::CheckSet(SpanSet* spanset, Length min_pages,int freelist) {
-  for (SpanSet::iterator it = spanset->begin(); it != spanset->end(); ++it) {
-    Span* s = it->span;
-    CHECK_CONDITION(s->length == it->length);
-    CHECK_CONDITION(s->location == freelist);  // NORMAL or RETURNED
-    CHECK_CONDITION(s->length >= min_pages);
-    CHECK_CONDITION(GetDescriptor(s->start) == s);
-    CHECK_CONDITION(GetDescriptor(s->start+s->length-1) == s);
+    CHECK_CONDITION(s->length == FreeListItemSize);
+    CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start) == s);
+    CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start+s->length-1) == s);
   }
   return true;
 }
 
 //taghavi
 //extended memory unit nested class methods
-PageHeap::ExtendedMemory::ExtendedMemory(){
+PageHeap::ExtendedMemory::ExtendedMemory()
+	: aggressive_decommit_(false),
+		scavenge_counter_(0){
 }
+
+static const size_t kForcedCoalesceInterval = 128*1024*1024;
 
 Span* PageHeap::ExtendedMemory::AllocLarge(Lengt n) {
   Span *best = NULL;
@@ -546,12 +206,6 @@ Span* PageHeap::ExtendedMemory::AllocLarge(Lengt n) {
   bound.length = n;
 
   // First search the NORMAL spans..
-  
-  /*
-  >>> flowchart 15. does pageheap spanset of large objects have object? 
-  >>> flowchart 16. look for large spans that have at least n pages
-  >>> for flowchart 18 go back to New method in this file.
-  */
   SpanSet::iterator place = large_normal_.upper_bound(SpanPtrWithLength(&bound));
   if (place != large_normal_.end()) {
     best = place->span;
@@ -580,11 +234,11 @@ Span* PageHeap::ExtendedMemory::AllocLarge(Lengt n) {
 
   // best comes from RETURNED set.
 
-  if (EnsureLimit(n, false)) {
-    return Carve(best, n);
+  if (Static::pagemap()->EnsureLimit(n, false)) {
+    return CarveLarge(best, n);
   }
 
-  if (EnsureLimit(n, true)) {
+  if (Static::pagemap()->EnsureLimit(n, true)) {
     // best could have been destroyed by coalescing.
     // best_normal is not a best-fit, and it could be destroyed as well.
     // We retry, the limit is already ensured:
@@ -594,7 +248,56 @@ Span* PageHeap::ExtendedMemory::AllocLarge(Lengt n) {
   // If best_normal existed, EnsureLimit would succeeded:
   ASSERT(best_normal == NULL);
   // We are not allowed to take best from returned list.
-  return NULL;
+  
+	if (Static::pagemap()->GetFreeBytes() != 0 && Static::pagemap()->GetUnmappedBytes() != 0
+      && Static::pagemap()->GetFreeBytes() + Static::pagemap()->GetUnmappedBytes() >= Static::pagemap()->GetSystemBytes() / 4
+      && (Static::pagemap()->GetSystemBytes() / kForcedCoalesceInterval
+          != (Static::pagemap()->GetSystemBytes() + (n << kPageShift)) / kForcedCoalesceInterval)) {
+    // We're about to grow heap, but there are lots of free pages.
+    // tcmalloc's design decision to keep unmapped and free spans
+    // separately and never coalesce them means that sometimes there
+    // can be free pages span of sufficient size, but it consists of
+    // "segments" of different type so page heap search cannot find
+    // it. In order to prevent growing heap and wasting memory in such
+    // case we're going to unmap all free pages. So that all free
+    // spans are maximally coalesced.
+    //
+    // We're also limiting 'rate' of going into this path to be at
+    // most once per 128 megs of heap growth. Otherwise programs that
+    // grow heap frequently (and that means by small amount) could be
+    // penalized with higher count of minor page faults.
+    //
+    // See also large_heap_fragmentation_unittest.cc and
+    // https://code.google.com/p/gperftools/issues/detail?id=368
+    ReleaseAtLeastNPages(static_cast<Length>(0x7fffffff));
+
+    // then try again. If we are forced to grow heap because of large
+    // spans fragmentation and not because of problem described above,
+    // then at the very least we've just unmapped free but
+    // insufficiently big large spans back to OS. So in case of really
+    // unlucky memory fragmentation we'll be consuming virtual address
+    // space, but not real memory
+    result = AllocLarge(n); 
+    if (result != NULL) return result;
+  }
+
+  // Grow the heap and try again.
+  
+  /*
+  >>> for flowchart 18 goto implementation of GrowHeap method in this file.
+  */
+  if (!GrowHeap(n)) {
+		ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
+    ASSERT(Check());
+    // underlying SysAllocator likely set ENOMEM but we can get here
+    // due to EnsureLimit so we set it here too.
+    //
+    // Setting errno to ENOMEM here allows us to avoid dealing with it
+    // in fast-path.
+    errno = ENOMEM;
+    return NULL;
+  }
+  return AllocLarge(n);
 }
 
 
@@ -612,7 +315,7 @@ Span* PageHeap::ExtendedMemory::CarveLarge(Span* span, Length n) {
     Span* leftover = NewSpan(span->start + n, extra);
     leftover->location = old_location;
     Event(leftover, 'S', extra);
-    RecordSpan(leftover);
+		Static::pagemap()->RecordSpan(leftover);
 
     // The previous span of |leftover| was just splitted -- no need to
     // coalesce them. The next span of |leftover| was not previously coalesced
@@ -620,7 +323,7 @@ Span* PageHeap::ExtendedMemory::CarveLarge(Span* span, Length n) {
 #ifndef NDEBUG
     const PageID p = leftover->start;
     const Length len = leftover->length;
-    Span* next = GetDescriptor(p+len);
+    Span* next = Static::pagemap()->GetDescriptor(p+len);
     ASSERT (next == NULL ||
             next->location == Span::IN_USE ||
             next->location != leftover->location);
@@ -628,26 +331,26 @@ Span* PageHeap::ExtendedMemory::CarveLarge(Span* span, Length n) {
 
     PrependToFreeSet(leftover);  // Skip coalescing - no candidates possible
     span->length = n;
-    pagemap_.set(span->start + n - 1, span);
+		Static::pagemap()->SetPageMap(span->start + n - 1, span);
   }
   ASSERT(Check());
   if (old_location == Span::ON_RETURNED_FREELIST) {
     // We need to recommit this address space.
-    CommitSpan(span);
+					Static::pagemap()->CommitSpan(span);
   }
   ASSERT(span->location == Span::IN_USE);
   ASSERT(span->length == n);
-  ASSERT(stats_.unmapped_bytes+ stats_.committed_bytes==stats_.system_bytes);
+	ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
   return span;
 }
 
 
 void PageHeap::ExtendedMemory::RemoveFromFreeSet(Span* span) {
   ASSERT(span->location != Span::IN_USE);
-  if (span->location == Span::ON_NORMAL_FREELIST) {
-    stats_.free_bytes -= (span->length << kPageShift);
+	if (span->location == Span::ON_NORMAL_FREELIST) {
+					Static::pagemap()->ReduceFreeBytes(span->length << kPageShift);
   } else {
-    stats_.unmapped_bytes -= (span->length << kPageShift);
+					Static::pagemap()->ReduceUnmappedBytes(span->length << kPageShift);
   }
 	SpanSet *set = &large_normal_;
 	if (span->location == Span::ON_RETURNED_FREELIST)
@@ -660,10 +363,10 @@ void PageHeap::ExtendedMemory::RemoveFromFreeSet(Span* span) {
 
 void PageHeap::ExtendedMemory::PrependToFreeSet(Span* span) {
   ASSERT(span->location != Span::IN_USE);
-  if (span->location == Span::ON_NORMAL_FREELIST)
-    stats_.free_bytes += (span->length << kPageShift);
+	if (span->location == Span::ON_NORMAL_FREELIST)
+    Static::pagemap()->AddFreeBytes(span->length << kPageShift);
   else
-    stats_.unmapped_bytes += (span->length << kPageShift);
+    Static::pagemap()->AddUnmappedBytes(span->length << kPageShift);
 	
 	SpanSet *set = &large_normal_;
 	if (span->location == Span::ON_RETURNED_FREELIST)
@@ -676,77 +379,31 @@ void PageHeap::ExtendedMemory::PrependToFreeSet(Span* span) {
 }
 
 bool PageHeap::ExtendedMemory::Check() {
-  return true;
-}
-
-void PageHeap::ExtendedMemory::CommitSpan(Span* span) {
-  ++stats_.commit_count;
-
-  TCMalloc_SystemCommit(reinterpret_cast<void*>(span->start << kPageShift),
-                        static_cast<size_t>(span->length << kPageShift));
-  stats_.committed_bytes += span->length << kPageShift;
-  stats_.total_commit_bytes += (span->length << kPageShift);
-}
-
-bool PageHeap::ExtendedMemory::EnsureLimit(Length n, bool withRelease)
-{
-  Length limit = (FLAGS_tcmalloc_heap_limit_mb*1024*1024) >> kPageShift;
-  if (limit == 0) return true; //there is no limit
-
-  // We do not use stats_.system_bytes because it does not take
-  // MetaDataAllocs into account.
-  Length takenPages = TCMalloc_SystemTaken >> kPageShift;
-  //XXX takenPages may be slightly bigger than limit for two reasons:
-  //* MetaDataAllocs ignore the limit (it is not easy to handle
-  //  out of memory there)
-  //* sys_alloc may round allocation up to huge page size,
-  //  although smaller limit was ensured
-
-  ASSERT(takenPages >= stats_.unmapped_bytes >> kPageShift);
-  takenPages -= stats_.unmapped_bytes >> kPageShift;
-
-  if (takenPages + n > limit && withRelease) {
-    takenPages -= ReleaseAtLeastNPages(takenPages + n - limit);
-  }
-
-  return takenPages + n <= limit;
+				return true;
 }
 
 Length PageHeap::ExtendedMemory::ReleaseAtLeastNPages(Length num_pages) {
-  Length released_pages = 0;
+				Length released_pages = 0;
 
-  // Round robin through the lists of free spans, releasing a
-  // span from each list.  Stop after releasing at least num_pages
-  // or when there is nothing more to release.
-  while (released_pages < num_pages && stats_.free_bytes > 0) {
-    for (int i = 0; i < kMaxPages+1 && released_pages < num_pages;
-         i++, release_index_++) {
-      Span *s;
-      if (release_index_ > kMaxPages) release_index_ = 0;
+				while (released_pages < num_pages && Static::pagemap()->GetFreeBytes() > 0) {
+								Span *s;
+								if (large_normal_.empty()) {
+												return;
+								}
+								s = (large_normal_.begin())->span;
 
-      if (release_index_ == kMaxPages) {
-        if (large_normal_.empty()) {
-          continue;
-        }
-        s = (large_normal_.begin())->span;
-      }
-      // TODO(todd) if the remaining number of pages to release
-      // is significantly smaller than s->length, and s is on the
-      // large freelist, should we carve s instead of releasing?
-      // the whole thing?
-      Length released_len = ReleaseSpan(s);
-      // Some systems do not support release
-      if (released_len == 0) return released_pages;
-      released_pages += released_len;
-    }
-  }
-  return released_pages;
+								Length released_len = ReleaseSpan(s);
+								// Some systems do not support release
+								if (released_len == 0) return released_pages;
+								released_pages += released_len;
+				}
+				return released_pages;
 }
 
 Length PageHeap::ExtendedMemory::ReleaseSpan(Span* s) {
   ASSERT(s->location == Span::ON_NORMAL_FREELIST);
 
-  if (DecommitSpan(s)) {
+  if (Static::pagemap()->DecommitSpan(s)) {
     RemoveFromFreeSet(s);
     const Length n = s->length;
     s->location = Span::ON_RETURNED_FREELIST;
@@ -755,19 +412,6 @@ Length PageHeap::ExtendedMemory::ReleaseSpan(Span* s) {
   }
 
   return 0;
-}
-
-bool PageHeap::ExtendedMemory::DecommitSpan(Span* span) {
-  ++stats_.decommit_count;
-
-  bool rv = TCMalloc_SystemRelease(reinterpret_cast<void*>(span->start << kPageShift),
-                                   static_cast<size_t>(span->length << kPageShift));
-  if (rv) {
-    stats_.committed_bytes -= span->length << kPageShift;
-    stats_.total_decommit_bytes += (span->length << kPageShift);
-  }
-
-  return rv;
 }
 
 void PageHeap::ExtendedMemory::MergeIntoFreeSet(Span* span) {
@@ -794,12 +438,12 @@ void PageHeap::ExtendedMemory::MergeIntoFreeSet(Span* span) {
   const Length n = span->length;
 
   if (aggressive_decommit_ && span->location == Span::ON_NORMAL_FREELIST) {
-    if (DecommitSpan(span)) {
+    if (Static::pagemap()->DecommitSpan(span)) {
       span->location = Span::ON_RETURNED_FREELIST;
     }
   }
 
-  Span* prev = CheckAndHandlePreMerge(span, GetDescriptor(p-1));
+  Span* prev = CheckAndHandlePreMerge(span, Static::pagemap()->GetDescriptor(p-1));
   if (prev != NULL) {
     // Merge preceding span into this span
     ASSERT(prev->start + prev->length == p);
@@ -807,17 +451,17 @@ void PageHeap::ExtendedMemory::MergeIntoFreeSet(Span* span) {
     DeleteSpan(prev);
     span->start -= len;
     span->length += len;
-    pagemap_.set(span->start, span);
+		Static::pagemap()->SetPageMap(span->start, span);
     Event(span, 'L', len);
   }
-  Span* next = CheckAndHandlePreMerge(span, GetDescriptor(p+n));
+  Span* next = CheckAndHandlePreMerge(span, Static::pagemap()->GetDescriptor(p+n));
   if (next != NULL) {
     // Merge next span into this span
     ASSERT(next->start == p+n);
     const Length len = next->length;
     DeleteSpan(next);
     span->length += len;
-    pagemap_.set(span->start + span->length - 1, span);
+		Static::pagemap()->SetPageMap(span->start + span->length - 1, span);
     Event(span, 'R', len);
   }
 
@@ -829,7 +473,7 @@ void PageHeap::ExtendedMemory::MergeIntoFreeSet(Span* span) {
 // other span from free list, performs aggressive decommit if
 // necessary and returns 'other' span. Otherwise 'other' span cannot
 // be merged and is left untouched. In that case NULL is returned.
-Span* PageHeap::CheckAndHandlePreMerge(Span* span, Span* other) {
+Span* PageHeap::ExtendedMemory::CheckAndHandlePreMerge(Span* span, Span* other) {
   if (other == NULL) {
     return other;
   }
@@ -837,7 +481,7 @@ Span* PageHeap::CheckAndHandlePreMerge(Span* span, Span* other) {
   // then we try to decommit adjacent span.
   if (aggressive_decommit_ && other->location == Span::ON_NORMAL_FREELIST
       && span->location == Span::ON_RETURNED_FREELIST) {
-    bool worked = DecommitSpan(other);
+    bool worked = Static::pagemap()->DecommitSpan(other);
     if (!worked) {
       return NULL;
     }
@@ -847,5 +491,290 @@ Span* PageHeap::CheckAndHandlePreMerge(Span* span, Span* other) {
 
   RemoveFromFreeSet(other);
   return other;
+}
+
+bool PageHeap::ExtendedMemory::GrowHeap(Length n) {
+  if (n > kMaxValidPages) return false;
+  Length ask = (n>kMinSystemAlloc) ? n : static_cast<Length>(kMinSystemAlloc);
+  size_t actual_size;
+  void* ptr = NULL;
+  if (Static::pagemap()->EnsureLimit(ask)) {
+      /*
+      >>> flowchart 18. grow heap by  requesting  m size of bytes that is multiple 
+      >>> size of n pages. for more info about allocating by system calls goto
+      >>> implementation of TCMalloc_SystemAlloc in system_alloc.cc file.
+      */
+      ptr = TCMalloc_SystemAlloc(ask << kPageShift, &actual_size, kPageSize);
+  }
+  if (ptr == NULL) {
+    if (n < ask) {
+      // Try growing just "n" pages
+      ask = n;
+      if (Static::pagemap()->EnsureLimit(ask)) {
+        ptr = TCMalloc_SystemAlloc(ask << kPageShift, &actual_size, kPageSize);
+      }
+    }
+    if (ptr == NULL) return false;
+  }
+  ask = actual_size >> kPageShift;
+  RecordGrowth(ask << kPageShift);
+
+	Static::pagemap()->AddReserveCount(1);
+	Static::pagemap()->AddCommitCount(1);
+
+  uint64_t old_system_bytes = Static::pagemap()->GetSystemBytes();
+	Static::pagemap()->AddSystemBytes(ask << kPageShift);
+	Static::pagemap()->AddCommitedBytes(ask << kPageShift);
+
+	Static::pagemap()->AddTotalCommitBytes(ask << kPageShift);
+	Static::pagemap()->AddTotalReserveBytes(ask << kPageShift);
+
+  const PageID p = reinterpret_cast<uintptr_t>(ptr) >> kPageShift;
+  ASSERT(p > 0);
+
+  // If we have already a lot of pages allocated, just pre allocate a bunch of
+  // memory for the page map. This prevents fragmentation by pagemap metadata
+  // when a program keeps allocating and freeing large blocks.
+
+  if (old_system_bytes < kPageMapBigAllocationThreshold
+      && Static::pagemap()->GetSystemBytes() >= kPageMapBigAllocationThreshold) {
+					Static::pagemap()->PreallocateMoreMemoryPageMap();
+  }
+
+  // Make sure pagemap_ has entries for all of the new pages.
+  // Plus ensure one before and one after so coalescing code
+  // does not need bounds-checking.
+  if (Static::pagemap()->EnsurePageMap(p-1, ask+2)) {
+    // Pretend the new area is allocated and then Delete() it to cause
+    // any necessary coalescing to occur.
+    
+    /*
+    >>> flowchart 19. add span with size m to page heap free linked list of spans
+    >>> or page heap spanset of large spans. for more info goto impl of 
+    >>> NewSpan and Delete method in this file.
+    */
+    Span* span = NewSpan(p, ask);
+		Static::pagemap()->RecordSpan(span);
+    Delete(span);
+		ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
+		ASSERT(Check());
+    return true;
+  } else {
+    // We could not allocate memory within "pagemap_"
+    // TODO: Once we can return memory to the system, return the new span
+    return false;
+  }
+}
+
+static void RecordGrowth(size_t growth) {
+  StackTrace* t = Static::stacktrace_allocator()->New();
+  t->depth = GetStackTrace(t->stack, kMaxStackDepth-1, 3);
+  t->size = growth;
+  t->stack[kMaxStackDepth-1] = reinterpret_cast<void*>(Static::growth_stacks());
+  Static::set_growth_stacks(t);
+}
+
+
+void PageHeap::ExtendedMemory::Delete(Span* span) {
+  ASSERT(Check());
+  ASSERT(span->location == Span::IN_USE);
+  ASSERT(span->length > 0);
+  ASSERT(Static::pagemap()->GetDescriptor(span->start) == span);
+  ASSERT(Static::pagemap()->GetDescriptor(span->start + span->length - 1) == span);
+  const Length n = span->length;
+  span->sizeclass = 0;
+  span->sample = 0;
+  span->location = Span::ON_NORMAL_FREELIST;
+  Event(span, 'D', span->length);
+  MergeIntoFreeSet(span);  // Coalesces if possible
+  IncrementalScavenge(n);
+  ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
+	ASSERT(Check());
+}
+
+Span* PageHeap::Split(Span* span, Length n) {
+  ASSERT(0 < n);
+  ASSERT(n < span->length);
+  ASSERT(span->location == Span::IN_USE);
+  ASSERT(span->sizeclass == 0);
+  Event(span, 'T', n);
+
+  const int extra = span->length - n;
+  Span* leftover = NewSpan(span->start + n, extra);
+  ASSERT(leftover->location == Span::IN_USE);
+  Event(leftover, 'U', extra);
+	Static::pagemap()->RecordSpan(leftover);
+	Static::pagemap()->SetPageMap(span->start + n - 1, span); // Update map from pageid to span
+  span->length = n;
+
+  return leftover;
+}
+
+void PageHeap::ExtendedMemory::IncrementalScavenge(Length n) {
+  // Fast path; not yet time to release memory
+  scavenge_counter_ -= n;
+  if (scavenge_counter_ >= 0) return;  // Not yet time to scavenge
+
+  const double rate = FLAGS_tcmalloc_release_rate;
+  if (rate <= 1e-6) {
+    // Tiny release rate means that releasing is disabled.
+    scavenge_counter_ = kDefaultReleaseDelay;
+    return;
+  }
+
+	Static::pagemap()->AddScavengeCount(1);
+
+  Length released_pages = ReleaseAtLeastNPages(1);
+
+  if (released_pages == 0) {
+    // Nothing to scavenge, delay for a while.
+    scavenge_counter_ = kDefaultReleaseDelay;
+  } else {
+    // Compute how long to wait until we return memory.
+    // FLAGS_tcmalloc_release_rate==1 means wait for 1000 pages
+    // after releasing one page.
+    const double mult = 1000.0 / rate;
+    double wait = mult * static_cast<double>(released_pages);
+    if (wait > kMaxReleaseDelay) {
+      // Avoid overflow and bound to reasonable range.
+      wait = kMaxReleaseDelay;
+    }
+    scavenge_counter_ = static_cast<int64_t>(wait);
+  }
+}
+
+bool PageHeap::ExtendedMemory::CheckSet(SpanSet* spanset,int freelist) {
+  for (SpanSet::iterator it = spanset->begin(); it != spanset->end(); ++it) {
+    Span* s = it->span;
+    CHECK_CONDITION(s->length == it->length);
+    CHECK_CONDITION(s->location == freelist);  // NORMAL or RETURNED
+    CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start) == s);
+    CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start+s->length-1) == s);
+  }
+  return true;
+}
+
+void PageHeap::ExtendedMemory::GetLargeSpanStats(LargeSpanStats* result) {
+  result->spans = 0;
+  result->normal_pages = 0;
+  result->returned_pages = 0;
+  for (SpanSet::iterator it = large_normal_.begin(); it != large_normal_.end(); ++it) {
+    result->normal_pages += it->length;
+    result->spans++;
+  }
+  for (SpanSet::iterator it = large_returned_.begin(); it != large_returned_.end(); ++it) {
+    result->returned_pages += it->length;
+    result->spans++;
+  }
+}
+
+PageHeap::PageMap::PageMap()
+	: pagemap_(MetaDataAlloc){
+}
+
+void PageHeap::PageMap::CommitSpan(Span* span) {
+  ++stats_.commit_count;
+
+  TCMalloc_SystemCommit(reinterpret_cast<void*>(span->start << kPageShift),
+                        static_cast<size_t>(span->length << kPageShift));
+  stats_.committed_bytes += span->length << kPageShift;
+  stats_.total_commit_bytes += (span->length << kPageShift);
+}
+
+bool PageHeap::PageMap::EnsureLimit(Length n, bool withRelease)
+{
+  Length limit = (FLAGS_tcmalloc_heap_limit_mb*1024*1024) >> kPageShift;
+  if (limit == 0) return true; //there is no limit
+
+  // We do not use stats_.system_bytes because it does not take
+  // MetaDataAllocs into account.
+  Length takenPages = TCMalloc_SystemTaken >> kPageShift;
+  //XXX takenPages may be slightly bigger than limit for two reasons:
+  //* MetaDataAllocs ignore the limit (it is not easy to handle
+  //  out of memory there)
+  //* sys_alloc may round allocation up to huge page size,
+  //  although smaller limit was ensured
+
+  ASSERT(takenPages >= stats_.unmapped_bytes >> kPageShift);
+  takenPages -= stats_.unmapped_bytes >> kPageShift;
+
+  if (takenPages + n > limit && withRelease) {
+    takenPages -= Static::extended_memory()->ReleaseAtLeastNPages(takenPages + n - limit);
+  }
+
+  return takenPages + n <= limit;
+}
+
+
+bool PageHeap::PageMap::DecommitSpan(Span* span) {
+  ++stats_.decommit_count;
+
+  bool rv = TCMalloc_SystemRelease(reinterpret_cast<void*>(span->start << kPageShift),
+                                   static_cast<size_t>(span->length << kPageShift));
+  if (rv) {
+    stats_.committed_bytes -= span->length << kPageShift;
+    stats_.total_decommit_bytes += (span->length << kPageShift);
+  }
+
+  return rv;
+}
+
+void PageHeap::PageMap::SetPageMap(Number k, void* v){
+	pagemap_.set(k, v);
+}
+
+void* PageHeap::PageMap::NextPageMap(Number k){
+	return pagemap_.Next(k)	
+}
+
+void PageHeap::PageMap::PreallocateMoreMemoryPageMap(){
+	pagemap_.PreallocateMoreMemory();
+}
+
+bool PageHeap::PageMap::EnsurePageMap(Number start, size_t n){
+	return pagemap_.Ensure(start, n)	
+}
+
+void PageHeap::PageMap::RegisterSizeClass(Span* span, uint32 sc) {
+  // Associate span object with all interior pages as well
+  ASSERT(span->location == Span::IN_USE);
+  ASSERT(GetDescriptor(span->start) == span);
+  ASSERT(GetDescriptor(span->start+span->length-1) == span);
+  Event(span, 'C', sc);
+  span->sizeclass = sc;
+  for (Length i = 1; i < span->length-1; i++) {
+    pagemap_.set(span->start+i, span);
+  }
+}
+
+bool PageHeap::PageMap::GetNextRange(PageID start, base::MallocRange* r) {
+  Span* span = reinterpret_cast<Span*>(pagemap_.Next(start));
+  if (span == NULL) {
+    return false;
+  }
+  r->address = span->start << kPageShift;
+  r->length = span->length << kPageShift;
+  r->fraction = 0;
+  switch (span->location) {
+    case Span::IN_USE:
+      r->type = base::MallocRange::INUSE;
+      r->fraction = 1;
+      if (span->sizeclass > 0) {
+        // Only some of the objects in this span may be in use.
+        const size_t osize = Static::sizemap()->class_to_size(span->sizeclass);
+        r->fraction = (1.0 * osize * span->refcount) / r->length;
+      }
+      break;
+    case Span::ON_NORMAL_FREELIST:
+      r->type = base::MallocRange::FREE;
+      break;
+    case Span::ON_RETURNED_FREELIST:
+      r->type = base::MallocRange::UNMAPPED;
+      break;
+    default:
+      r->type = base::MallocRange::UNKNOWN;
+      break;
+  }
+  return true;
 }
 }  // namespace tcmalloc
