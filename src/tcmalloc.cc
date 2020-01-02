@@ -485,11 +485,10 @@ static void DumpStats(TCMalloc_Printer* out, int level) {
 
     // append page heap info
     int nonempty_sizes = 0;
-    for (int s = 0; s < kMaxPages; s++) {
-      if (small.normal_length[s] + small.returned_length[s] > 0) {
+    if (small.normal_length + small.returned_length > 0) {
         nonempty_sizes++;
-      }
     }
+
     out->printf("------------------------------------------------\n");
     out->printf("PageHeap: %d sizes; %6.1f MiB free; %6.1f MiB unmapped\n",
                 nonempty_sizes, stats.pageheap.free_bytes / MiB,
@@ -497,23 +496,22 @@ static void DumpStats(TCMalloc_Printer* out, int level) {
     out->printf("------------------------------------------------\n");
     uint64_t total_normal = 0;
     uint64_t total_returned = 0;
-    for (int s = 1; s <= kMaxPages; s++) {
-      const int n_length = small.normal_length[s - 1];
-      const int r_length = small.returned_length[s - 1];
-      if (n_length + r_length > 0) {
-        uint64_t n_pages = s * n_length;
-        uint64_t r_pages = s * r_length;
-        total_normal += n_pages;
-        total_returned += r_pages;
-        out->printf("%6u pages * %6u spans ~ %6.1f MiB; %6.1f MiB cum"
-                    "; unmapped: %6.1f MiB; %6.1f MiB cum\n",
-                    s,
-                    (n_length + r_length),
-                    PagesToMiB(n_pages + r_pages),
-                    PagesToMiB(total_normal + total_returned),
-                    PagesToMiB(r_pages),
-                    PagesToMiB(total_returned));
-      }
+
+    const int n_length = small.normal_length;
+    const int r_length = small.returned_length;
+    if (n_length + r_length > 0) {
+      uint64_t n_pages = 8 * n_length;
+      uint64_t r_pages = 8 * r_length;
+      total_normal = n_pages;
+      total_returned = r_pages;
+      out->printf("%6u pages * %6u spans ~ %6.1f MiB; %6.1f MiB cum"
+                  "; unmapped: %6.1f MiB; %6.1f MiB cum\n",
+                  8,
+                  (n_length + r_length),
+                  PagesToMiB(n_pages + r_pages),
+                  PagesToMiB(total_normal + total_returned),
+                  PagesToMiB(r_pages),
+                  PagesToMiB(total_returned));
     }
 
     total_normal += large.normal_pages;
@@ -1000,19 +998,17 @@ class TCMallocImplementation : public MallocExtension {
     v->push_back(span_info);
 
     // small spans
-    for (int s = 1; s <= kMaxPages; s++) {
-      MallocExtension::FreeListInfo i;
-      i.max_object_size = (s << kPageShift);
-      i.min_object_size = ((s - 1) << kPageShift);
+    MallocExtension::FreeListInfo i;
+    i.max_object_size = (8 << kPageShift);
+    i.min_object_size = (8 << kPageShift);
 
-      i.type = kPageHeapType;
-      i.total_bytes_free = (s << kPageShift) * small.normal_length[s - 1];
-      v->push_back(i);
+    i.type = kPageHeapType;
+    i.total_bytes_free = (8 << kPageShift) * small.normal_length;
+    v->push_back(i);
 
-      i.type = kPageHeapUnmappedType;
-      i.total_bytes_free = (s << kPageShift) * small.returned_length[s - 1];
-      v->push_back(i);
-    }
+    i.type = kPageHeapUnmappedType;
+    i.total_bytes_free = (8 << kPageShift) * small.returned_length;
+    v->push_back(i);
   }
 };
 

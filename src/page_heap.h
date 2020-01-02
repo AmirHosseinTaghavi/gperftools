@@ -70,7 +70,38 @@ namespace base {
 }
 
 namespace tcmalloc {
+              
+// -------------------------------------------------------------------------
+							// Map from page-id to per-page data
+							// -------------------------------------------------------------------------
 
+							// We use PageMap2<> for 32-bit and PageMap3<> for 64-bit machines.
+							// We also use a simple one-level cache for hot PageID-to-sizeclass mappings,
+							// because sometimes the sizeclass is all the information we need.
+
+							// Selector class -- general selector uses 3-level map
+							template <int BITS> class MapSelector {
+											public:
+															typedef TCMalloc_PageMap3<BITS-kPageShift> Type;
+							};
+
+#ifndef TCMALLOC_SMALL_BUT_SLOW
+							// x86-64 and arm64 are using 48 bits of address space. So we can use
+							// just two level map, but since initial ram consumption of this mode
+							// is a bit on the higher side, we opt-out of it in
+							// TCMALLOC_SMALL_BUT_SLOW mode.
+							template <> class MapSelector<48> {
+											public:
+															typedef TCMalloc_PageMap2<48-kPageShift> Type;
+							};
+
+#endif // TCMALLOC_SMALL_BUT_SLOW
+
+							// A two-level map for 32-bit machines
+							template <> class MapSelector<32> {
+											public:
+															typedef TCMalloc_PageMap2<32-kPageShift> Type;
+							};
 	// -------------------------------------------------------------------------
 	// Page-level allocator
 	//  * Eager coalescing
@@ -140,7 +171,7 @@ namespace tcmalloc {
 					// REQUIRES: span->location == IN_USE
 					// REQUIRES: span->sizeclass == 0
 					Span* Split(Span* span, Length n);
-					bool CheckSet(SpanSet *s, int freelist);
+					bool CheckSet();
 
 					bool GetAggressiveDecommit(void) {return aggressive_decommit_;}
 					void SetAggressiveDecommit(bool aggressive_decommit) {
@@ -181,6 +212,9 @@ namespace tcmalloc {
 					// Number of pages to deallocate before doing more scavenging
 					int64_t scavenge_counter_;
 
+          // Freelist items size (pages): 32 pages = 512kb
+					static const int FreeListItemSize = 8;
+
 					// Minimum number of pages to fetch from system at a time.  Must be
 					// significantly bigger than kBlockSize to amortize system-call
 					// overhead, and also to reduce external fragementation.  Also, we
@@ -188,9 +222,6 @@ namespace tcmalloc {
 					// have small limits on the number of mmap() regions per
 					// address-space.
 					static const int kMinSystemAlloc = 2*FreeListItemSize;
-
-					// Freelist items size (pages): 32 pages = 512kb
-					static const int FreeListItemSize = 8;
 
 					// Allocates a big block of memory for the pagemap once we reach more than
 					// 128MB
@@ -207,39 +238,7 @@ namespace tcmalloc {
 			};
 
 			class PageMap{
-							// -------------------------------------------------------------------------
-							// Map from page-id to per-page data
-							// -------------------------------------------------------------------------
-
-							// We use PageMap2<> for 32-bit and PageMap3<> for 64-bit machines.
-							// We also use a simple one-level cache for hot PageID-to-sizeclass mappings,
-							// because sometimes the sizeclass is all the information we need.
-
-							// Selector class -- general selector uses 3-level map
-							template <int BITS> class MapSelector {
-											public:
-															typedef TCMalloc_PageMap3<BITS-kPageShift> Type;
-							};
-
-#ifndef TCMALLOC_SMALL_BUT_SLOW
-							// x86-64 and arm64 are using 48 bits of address space. So we can use
-							// just two level map, but since initial ram consumption of this mode
-							// is a bit on the higher side, we opt-out of it in
-							// TCMALLOC_SMALL_BUT_SLOW mode.
-							template <> class MapSelector<48> {
-											public:
-															typedef TCMalloc_PageMap2<48-kPageShift> Type;
-							};
-
-#endif // TCMALLOC_SMALL_BUT_SLOW
-
-							// A two-level map for 32-bit machines
-							template <> class MapSelector<32> {
-											public:
-															typedef TCMalloc_PageMap2<32-kPageShift> Type;
-							};
-
-Public:
+public:
 							PageMap();
 
 							// Return the descriptor for the specified page.  Returns NULL if
@@ -313,22 +312,14 @@ Public:
 							// If this page heap is managing a range with starting page # >= start,
 							// store info about the range in *r and return true.  Else return false.
 							bool GetNextRange(PageID start, base::MallocRange* r);
-Private:
-							// Pick the appropriate map and cache types based on pointer size
-							typedef MapSelector<kAddressBits>::Type PageMap;
-							typedef PackedCache<kAddressBits - kPageShift> PageMapCache;
-							mutable PageMapCache pagemap_cache_;
-							PageMap pagemap_;
-
-							void RecordSpan(Span* span) {
+              typedef uintptr_t Number;
+              
+              void RecordSpan(Span* span) {
 											pagemap_.set(span->start, span);
 											if (span->length > 1) {
 															pagemap_.set(span->start + span->length - 1, span);
 											}
 							}
-
-							// Statistics on system, free, and unmapped bytes
-							Stats stats_;
 
 							// Commit the span.
 							void CommitSpan(Span* span);
@@ -345,6 +336,15 @@ Private:
 							void* NextPageMap(Number k);
 							void PreallocateMoreMemoryPageMap();
 							bool EnsurePageMap(Number start, size_t n);
+private:
+							// Pick the appropriate map and cache types based on pointer size
+							typedef MapSelector<kAddressBits>::Type PageMapType;
+							typedef PackedCache<kAddressBits - kPageShift> PageMapCache;
+							mutable PageMapCache pagemap_cache_;
+							PageMapType pagemap_;
+
+							// Statistics on system, free, and unmapped bytes
+							Stats stats_;
 			};
 
 		private:

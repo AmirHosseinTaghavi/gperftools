@@ -63,8 +63,8 @@ DEFINE_int64(tcmalloc_heap_limit_mb,
 namespace tcmalloc {
 
 PageHeap::PageHeap() {
-	DLL_Init(&free_[i].normal);
-	DLL_Init(&free_[i].returned);
+	DLL_Init(&free_.normal);
+	DLL_Init(&free_.returned);
 }
 
 Span* PageHeap::New(Length n) {
@@ -131,7 +131,7 @@ Span* PageHeap::New(Length n) {
 					}
 					PrependToFreeList(large_span);
 	}
-	return New(n)
+	return New(n);
 }
 
 void PageHeap::PrependToFreeList(Span* span) {
@@ -170,8 +170,7 @@ bool PageHeap::Check() {
 
 bool PageHeap::CheckExpensive() {
   bool result = Check();
-	Static::extended_memory()->CheckSet(&large_normal_, Span::ON_NORMAL_FREELIST);
-	Static::extended_memory()->CheckSet(&large_returned_, Span::ON_RETURNED_FREELIST);
+	Static::extended_memory()->CheckSet();
 	CheckList(&free_.normal, Span::ON_NORMAL_FREELIST);
 	CheckList(&free_.returned, Span::ON_RETURNED_FREELIST);
   return result;
@@ -196,7 +195,7 @@ PageHeap::ExtendedMemory::ExtendedMemory()
 
 static const size_t kForcedCoalesceInterval = 128*1024*1024;
 
-Span* PageHeap::ExtendedMemory::AllocLarge(Lengt n) {
+Span* PageHeap::ExtendedMemory::AllocLarge(Length n) {
   Span *best = NULL;
   Span *best_normal = NULL;
 
@@ -277,7 +276,7 @@ Span* PageHeap::ExtendedMemory::AllocLarge(Lengt n) {
     // insufficiently big large spans back to OS. So in case of really
     // unlucky memory fragmentation we'll be consuming virtual address
     // space, but not real memory
-    result = AllocLarge(n); 
+    Span* result = AllocLarge(n); 
     if (result != NULL) return result;
   }
 
@@ -388,7 +387,7 @@ Length PageHeap::ExtendedMemory::ReleaseAtLeastNPages(Length num_pages) {
 				while (released_pages < num_pages && Static::pagemap()->GetFreeBytes() > 0) {
 								Span *s;
 								if (large_normal_.empty()) {
-												return;
+												return 0;
 								}
 								s = (large_normal_.begin())->span;
 
@@ -493,6 +492,14 @@ Span* PageHeap::ExtendedMemory::CheckAndHandlePreMerge(Span* span, Span* other) 
   return other;
 }
 
+static void RecordGrowth(size_t growth) {
+  StackTrace* t = Static::stacktrace_allocator()->New();
+  t->depth = GetStackTrace(t->stack, kMaxStackDepth-1, 3);
+  t->size = growth;
+  t->stack[kMaxStackDepth-1] = reinterpret_cast<void*>(Static::growth_stacks());
+  Static::set_growth_stacks(t);
+}
+
 bool PageHeap::ExtendedMemory::GrowHeap(Length n) {
   if (n > kMaxValidPages) return false;
   Length ask = (n>kMinSystemAlloc) ? n : static_cast<Length>(kMinSystemAlloc);
@@ -566,15 +573,6 @@ bool PageHeap::ExtendedMemory::GrowHeap(Length n) {
   }
 }
 
-static void RecordGrowth(size_t growth) {
-  StackTrace* t = Static::stacktrace_allocator()->New();
-  t->depth = GetStackTrace(t->stack, kMaxStackDepth-1, 3);
-  t->size = growth;
-  t->stack[kMaxStackDepth-1] = reinterpret_cast<void*>(Static::growth_stacks());
-  Static::set_growth_stacks(t);
-}
-
-
 void PageHeap::ExtendedMemory::Delete(Span* span) {
   ASSERT(Check());
   ASSERT(span->location == Span::IN_USE);
@@ -592,7 +590,7 @@ void PageHeap::ExtendedMemory::Delete(Span* span) {
 	ASSERT(Check());
 }
 
-Span* PageHeap::Split(Span* span, Length n) {
+Span* PageHeap::ExtendedMemory::Split(Span* span, Length n) {
   ASSERT(0 < n);
   ASSERT(n < span->length);
   ASSERT(span->location == Span::IN_USE);
@@ -643,11 +641,18 @@ void PageHeap::ExtendedMemory::IncrementalScavenge(Length n) {
   }
 }
 
-bool PageHeap::ExtendedMemory::CheckSet(SpanSet* spanset,int freelist) {
-  for (SpanSet::iterator it = spanset->begin(); it != spanset->end(); ++it) {
+bool PageHeap::ExtendedMemory::CheckSet() {
+  for (SpanSet::iterator it = large_normal_.begin(); it != large_normal_.end(); ++it) {
     Span* s = it->span;
     CHECK_CONDITION(s->length == it->length);
-    CHECK_CONDITION(s->location == freelist);  // NORMAL or RETURNED
+    CHECK_CONDITION(s->location == Span::ON_NORMAL_FREELIST);
+    CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start) == s);
+    CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start+s->length-1) == s);
+  }
+  for (SpanSet::iterator it = large_returned_.begin(); it != large_returned_.end(); ++it) {
+    Span* s = it->span;
+    CHECK_CONDITION(s->length == it->length);
+    CHECK_CONDITION(s->location == Span::ON_RETURNED_FREELIST);
     CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start) == s);
     CHECK_CONDITION(Static::pagemap()->GetDescriptor(s->start+s->length-1) == s);
   }
@@ -724,7 +729,7 @@ void PageHeap::PageMap::SetPageMap(Number k, void* v){
 }
 
 void* PageHeap::PageMap::NextPageMap(Number k){
-	return pagemap_.Next(k)	
+	return pagemap_.Next(k);
 }
 
 void PageHeap::PageMap::PreallocateMoreMemoryPageMap(){
@@ -732,7 +737,7 @@ void PageHeap::PageMap::PreallocateMoreMemoryPageMap(){
 }
 
 bool PageHeap::PageMap::EnsurePageMap(Number start, size_t n){
-	return pagemap_.Ensure(start, n)	
+	return pagemap_.Ensure(start, n);
 }
 
 void PageHeap::PageMap::RegisterSizeClass(Span* span, uint32 sc) {
