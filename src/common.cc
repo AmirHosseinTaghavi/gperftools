@@ -221,8 +221,8 @@ void SizeMap::Init() {
   // align = (1 << shift), malloc(i * align) % align == 0,
   //
   // for all align values up to kPageSize.
-  for (size_t align = kMinAlign; align <= kPageSize; align <<= 1) {
-    for (size_t size = align; size < kPageSize; size += align) {
+  for (size_t align = kMinAlign; align <= kMaxSize; align <<= 1) {
+    for (size_t size = align; size < kMaxSize; size += align) {
       CHECK_CONDITION(class_to_size_[SizeClass(size)] % align == 0);
     }
   }

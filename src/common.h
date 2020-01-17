@@ -77,7 +77,8 @@ static const size_t kPageShift  = 15;
 #elif defined(TCMALLOC_64K_PAGES)
 static const size_t kPageShift  = 16;
 #else
-static const size_t kPageShift  = 13;
+//static const size_t kPageShift  = 13;
+static const size_t kPageShift  = 19;
 #endif
 
 static const size_t kClassSizesMax = 96;
