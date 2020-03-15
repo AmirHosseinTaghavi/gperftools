@@ -52,14 +52,24 @@ void Event(Span* span, char op, int v = 0) {
 #endif
 
 Span* NewSpan(PageID p, Length len) {
-  Span* result = Static::span_allocator()->New();
-  memset(result, 0, sizeof(*result));
-  result->start = p;
-  result->length = len;
+  Span* span = Static::span_allocator()->New();
+  memset(span, 0, sizeof(*span));
+  span->start = p;
+  span->length = len;
 #ifdef SPAN_HISTORY
-  result->nexthistory = 0;
+  span->nexthistory = 0;
 #endif
-  return result;
+  return span;
+}
+
+Span* InitSpan(Span* span, PageID p, Length len) {
+  memset(span, 0, sizeof(*span));
+  span->start = p;
+  span->length = len;
+#ifdef SPAN_HISTORY
+  span->nexthistory = 0;
+#endif
+  return span;
 }
 
 void DeleteSpan(Span* span) {
@@ -83,11 +93,11 @@ void DLL_Remove(Span* span) {
 }
 
 int DLL_Length(const Span* list) {
-  int result = 0;
+  int span = 0;
   for (Span* s = list->next; s != list; s = s->next) {
-    result++;
+    span++;
   }
-  return result;
+  return span;
 }
 
 void DLL_Prepend(Span* list, Span* span) {

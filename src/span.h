@@ -146,6 +146,7 @@ inline SpanSet::iterator Span::ExtractSpanSetIterator() {
 
 // Allocator/deallocator for spans
 Span* NewSpan(PageID p, Length len);
+Span* InitSpan(Span* span, PageID p, Length len);
 void DeleteSpan(Span* span);
 
 // -------------------------------------------------------------------------

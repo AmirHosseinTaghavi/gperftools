@@ -252,7 +252,10 @@ void ThreadCache::Scavenge() {
 }
 
 void ThreadCache::IncreaseCacheLimit() {
-  SpinLockHolder h(Static::pageheap_lock());
+				for(int i=0; i<Static::get_pageheap_count(); i++){
+								SpinLockHolder h(Static::pageheap_lock_by_number(i));
+				}
+  SpinLockHolder w(Static::extended_lock());
   IncreaseCacheLimitLocked();
 }
 
@@ -292,7 +295,10 @@ int ThreadCache::GetSamplePeriod() {
 
 void ThreadCache::InitModule() {
   {
-    SpinLockHolder h(Static::pageheap_lock());
+				for(int i=0; i<Static::get_pageheap_count(); i++){
+								SpinLockHolder h(Static::pageheap_lock_by_number(i));
+				}
+    SpinLockHolder w(Static::extended_lock());
     if (phinited) {
       return;
     }
@@ -319,7 +325,10 @@ void ThreadCache::InitTSD() {
   // We may have used a fake pthread_t for the main thread.  Fix it.
   pthread_t zero;
   memset(&zero, 0, sizeof(zero));
-  SpinLockHolder h(Static::pageheap_lock());
+				for(int i=0; i<Static::get_pageheap_count(); i++){
+								SpinLockHolder h(Static::pageheap_lock_by_number(i));
+				}
+  SpinLockHolder h(Static::extended_lock());
   for (ThreadCache* h = thread_heaps_; h != NULL; h = h->next_) {
     if (h->tid_ == zero) {
       h->tid_ = pthread_self();
@@ -359,7 +368,10 @@ ThreadCache* ThreadCache::CreateCacheIfNecessary() {
 #endif
 
   {
-    SpinLockHolder h(Static::pageheap_lock());
+				for(int i=0; i<Static::get_pageheap_count(); i++){
+								SpinLockHolder h(Static::pageheap_lock_by_number(i));
+				}
+    SpinLockHolder w(Static::extended_lock());
     // On some old glibc's, and on freebsd's libc (as of freebsd 8.1),
     // calling pthread routines (even pthread_self) too early could
     // cause a segfault.  Since we can call pthreads quite early, we
@@ -479,7 +491,10 @@ void ThreadCache::DeleteCache(ThreadCache* heap) {
   heap->Cleanup();
 
   // Remove from linked list
-  SpinLockHolder h(Static::pageheap_lock());
+				for(int i=0; i<Static::get_pageheap_count(); i++){
+								SpinLockHolder h(Static::pageheap_lock_by_number(i));
+				}
+  SpinLockHolder w(Static::extended_lock());
   if (heap->next_ != NULL) heap->next_->prev_ = heap->prev_;
   if (heap->prev_ != NULL) heap->prev_->next_ = heap->next_;
   if (thread_heaps_ == heap) thread_heaps_ = heap->next_;

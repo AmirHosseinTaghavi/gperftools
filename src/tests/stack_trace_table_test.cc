@@ -31,7 +31,10 @@ static void AddTrace(tcmalloc::StackTraceTable* table,
   // we don't.  I comment it out on windows because the DLL-decl thing
   // is really annoying in this case.
 #ifndef _MSC_VER
-  SpinLockHolder h(tcmalloc::Static::pageheap_lock());
+  SpinLockHolder h(tcmalloc::Static::extended_lock());
+	for(int i=0; i<tcmalloc::Static::get_pageheap_count(); i++){
+					SpinLockHolder h(tcmalloc::Static::pageheap_lock_by_number(i));
+	}
 #endif
   table->AddTrace(t);
 }

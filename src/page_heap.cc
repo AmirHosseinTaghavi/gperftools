@@ -44,6 +44,11 @@
 #include "static_vars.h"       // for Static
 #include "system-alloc.h"      // for TCMalloc_SystemAlloc, etc
 #include <cmath>
+#include <fstream>
+#include <sys/syscall.h>
+#include <vector>
+#include <chrono>
+
 DEFINE_double(tcmalloc_release_rate,
 		EnvToDouble("TCMALLOC_RELEASE_RATE", 1.0),
 		"Rate at which we release unused memory to the system.  "
@@ -70,18 +75,46 @@ namespace tcmalloc {
 	Span* PageHeap::New(Length n) {
 		ASSERT(Check());
 		ASSERT(n > 0);
+		
+		pid_t thread_id = syscall(__NR_gettid); 
+
+//    Log(kLog, __FILE__, __LINE__,
+//        "pageheap new is called! ", thread_id
+//        );
+
+//		Span* head = &free_.normal;
+//		Span* temp = head;
+//		int length = 0;
+//		if(head != NULL){
+//						do{
+//										temp = temp->next;
+//										length++;
+//						} while( temp != head );
+//		}
+//
+//    Log(kLog, __FILE__, __LINE__,
+//        "length of free normal list is: ", length, " ", thread_id  
+//        );
 
 		if (n > 1){
+			Static::extended_lock()->Lock();
 			Span* large_span = Static::extended_memory()->AllocLarge(n);
+			Static::extended_lock()->Unlock();
 			large_span->location = Span::IN_USE;
 			return large_span;
 		}
 
+			//auto start = std::chrono::high_resolution_clock::now();
 		Span* ll = &free_.normal;
 		if (!DLL_IsEmpty(ll)) {
 			Span* span = ll->next;
 			ASSERT(span->location == Span::ON_NORMAL_FREELIST);
 			ASSERT(span->location != Span::IN_USE);
+			//auto stop = std::chrono::high_resolution_clock::now();
+			//auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop-start);
+		//	Log(kLog, __FILE__, __LINE__,
+		//									"inner allcation duration: ", duration.count()
+		//		 );
 			RemoveFromFreeList(span);
 			span->location = Span::IN_USE;
 			return span;
@@ -97,19 +130,38 @@ namespace tcmalloc {
 			return span;
 		}
 
-		// No luck in free lists, our last chance is in a larger class.
-
-		int request_pages = std::pow(2, std::ceil(log2(n))); 
-		Span* large_span = Static::extended_memory()->AllocLarge(request_pages); 
+//		int request_pages = std::pow(2, std::ceil(log2(n+1))+1); 
+		int request_pages = 10; 
+		Span* large_span = NULL;
+		Span* new_spans[10];
+		{
+						Log(kLog, __FILE__, __LINE__,
+														"thread ", thread_id, " wants to acquire extended lock." 
+							 );
+						SpinLockHolder h(Static::extended_lock());
+						Log(kLog, __FILE__, __LINE__,
+														"thread ", thread_id, " acquired extended lock." 
+							 );
+						Log(kLog, __FILE__, __LINE__,
+														"thread ", thread_id, " needs more memory, so requests 4 pages from extended memory unit." 
+							 );
+						large_span = Static::extended_memory()->AllocLarge(request_pages); 
+						Log(kLog, __FILE__, __LINE__,
+														"thread ", thread_id, " recieved 4 pages from extended memory unit." 
+							 );
+						for(int p=0; p<large_span->length-1; p++){
+								new_spans[p] = Static::span_allocator()->New();
+						}
+		}
 		if (large_span != NULL){
 			ASSERT(large_span->location != Span::IN_USE);
 			const int old_location = large_span->location;
 			large_span->location = Span::IN_USE;
-			Event(large_span, 'A', 3);
+			Event(large_span, 'A', 10);
 
 			int large_span_items = large_span->length; 
 			for (int i=1; i<large_span_items; i++) {
-				Span* new_span = NewSpan(large_span->start + i, 1);
+				Span* new_span = InitSpan(new_spans[i-1] ,large_span->start + i, 1);
 				new_span->location = old_location;
 				Event(new_span, 'S', 1);
 				Static::pagemap()->RecordSpan(new_span);
@@ -133,6 +185,7 @@ namespace tcmalloc {
 				Static::pagemap()->CommitSpan(large_span);
 			}
 			PrependToFreeList(large_span);
+
 		}
 		return New(n);
 	}
@@ -143,13 +196,28 @@ namespace tcmalloc {
 			Static::pagemap()->AddFreeBytes(span->length << kPageShift);
 		else
 			Static::pagemap()->AddUnmappedBytes(span->length << kPageShift);
-
+//		if(span->length != 1){
+//			int f = 0;
+//		}
 		SpanList* list = &free_;
 		if (span->location == Span::ON_NORMAL_FREELIST) {
 			DLL_Prepend(&list->normal, span);
 		} else {
 			DLL_Prepend(&list->returned, span);
 		}
+	/*	Span* head = &free_.normal;
+		Span* temp = head;
+		int length = 0;
+		if(head != NULL){
+				do{
+						temp = temp->next;
+						length++;
+				} while( temp != head );
+		}
+		if (length > 5)
+		{
+				int p = 9;
+		i}*/	
 	}
 
 	void PageHeap::RemoveFromFreeList(Span* span) {
@@ -173,7 +241,9 @@ namespace tcmalloc {
 
 	bool PageHeap::CheckExpensive() {
 		bool result = Check();
+		Static::extended_lock()->Lock();
 		Static::extended_memory()->CheckSet();
+		Static::extended_lock()->Unlock();
 		CheckList(&free_.normal, Span::ON_NORMAL_FREELIST);
 		CheckList(&free_.returned, Span::ON_RETURNED_FREELIST);
 		return result;
@@ -246,7 +316,7 @@ namespace tcmalloc {
 		ASSERT(best_normal == NULL);
 		// We are not allowed to take best from returned list.
 
-		if (Static::pagemap()->GetFreeBytes() != 0 && Static::pagemap()->GetUnmappedBytes() != 0
+		/* if (Static::pagemap()->GetFreeBytes() != 0 && Static::pagemap()->GetUnmappedBytes() != 0
 				&& Static::pagemap()->GetFreeBytes() + Static::pagemap()->GetUnmappedBytes() >= Static::pagemap()->GetSystemBytes() / 4
 				&& (Static::pagemap()->GetSystemBytes() / kForcedCoalesceInterval
 					!= (Static::pagemap()->GetSystemBytes() + (n << kPageShift)) / kForcedCoalesceInterval)) {
@@ -276,7 +346,7 @@ namespace tcmalloc {
 			// space, but not real memory
 			Span* result = AllocLarge(n); 
 			if (result != NULL) return result;
-		}
+		}*/
 
 		// Grow the heap and try again.
 

@@ -114,6 +114,8 @@ void SpinLock::SlowLock() {
       }
     }
 
+	//	pid_t thread_id = syscall(__NR_gettid); 
+	//	printf("lock_wait_count %d, thread id: %d\n", lock_wait_call_count, thread_id);
     // Wait for an OS specific delay.
     base::internal::SpinLockDelay(&lockword_, lock_value,
                                   ++lock_wait_call_count);

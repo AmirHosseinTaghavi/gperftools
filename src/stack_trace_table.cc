@@ -108,8 +108,11 @@ void** StackTraceTable::ReadStackTracesAndClear() {
   depth_total_ = 0;
   bucket_total_ = 0;
 
-  SpinLockHolder h(Static::pageheap_lock());
-  Entry* entry = head_;
+  SpinLockHolder h(Static::extended_lock());
+	for(int i=0; i<Static::get_pageheap_count(); i++){
+					SpinLockHolder h(Static::pageheap_lock_by_number(i));
+	}
+	Entry* entry = head_;
   while (entry != nullptr) {
     Entry* next = entry->next;
     allocator_.deallocate(entry, 1);

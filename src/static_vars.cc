@@ -48,109 +48,118 @@
 namespace tcmalloc {
 
 #if defined(HAVE_FORK) && defined(HAVE_PTHREAD)
-// These following two functions are registered via pthread_atfork to make
-// sure the central_cache locks remain in a consisten state in the forked
-// version of the thread.
+	// These following two functions are registered via pthread_atfork to make
+	// sure the central_cache locks remain in a consisten state in the forked
+	// version of the thread.
 
-void CentralCacheLockAll()
-{
-  Static::pageheap_lock()->Lock();
-  for (int i = 0; i < Static::num_size_classes(); ++i)
-    Static::central_cache()[i].Lock();
-}
+	void CentralCacheLockAll()
+	{
+		for(int i=0; i<Static::get_pageheap_count(); i++){
+			Static::pageheap_lock_by_number(i)->Lock();
+		}
+		Static::extended_lock()->Lock();
+		for (int i = 0; i < Static::num_size_classes(); ++i)
+			Static::central_cache()[i].Lock();
+	}
 
-void CentralCacheUnlockAll()
-{
-  for (int i = 0; i < Static::num_size_classes(); ++i)
-    Static::central_cache()[i].Unlock();
-  Static::pageheap_lock()->Unlock();
-}
+	void CentralCacheUnlockAll()
+	{
+		for (int i = 0; i < Static::num_size_classes(); ++i)
+			Static::central_cache()[i].Unlock();
+		for(int i=0; i<Static::get_pageheap_count(); i++){
+			Static::pageheap_lock_by_number(i)->Unlock();
+		}
+		Static::extended_lock()->Unlock();
+	}
 #endif
 
-bool Static::inited_;
-SpinLock Static::pageheap_lock_(SpinLock::LINKER_INITIALIZED);
-SizeMap Static::sizemap_;
-CentralFreeListPadded Static::central_cache_[kClassSizesMax];
-PageHeapAllocator<Span> Static::span_allocator_;
-PageHeapAllocator<StackTrace> Static::stacktrace_allocator_;
-Span Static::sampled_objects_;
-StackTrace* Static::growth_stacks_ = NULL;
-Static::PageHeapStorage Static::pageheap_;
-Static::ExtendedMemoryStorage Static::extended_memory_;
-Static::PageMapStorage Static::pagemap_;
+	bool Static::inited_;
+	SpinLock Static::pageheap_lock_[Static::pageheap_count]; 
+	SpinLock Static::extended_lock_(SpinLock::LINKER_INITIALIZED);
+	SizeMap Static::sizemap_;
+	CentralFreeListPadded Static::central_cache_[kClassSizesMax];
+	PageHeapAllocator<Span> Static::span_allocator_;
+	PageHeapAllocator<StackTrace> Static::stacktrace_allocator_;
+	Span Static::sampled_objects_;
+	StackTrace* Static::growth_stacks_ = NULL;
+	Static::PageHeapStorage Static::pageheap_[Static::pageheap_count];
+	Static::ExtendedMemoryStorage Static::extended_memory_;
+	Static::PageMapStorage Static::pagemap_;
 
-void Static::InitStaticVars() {
-  sizemap_.Init();
-  span_allocator_.Init();
-  span_allocator_.New(); // Reduce cache conflicts
-  span_allocator_.New(); // Reduce cache conflicts
-  stacktrace_allocator_.Init();
-  // Do a bit of sanitizing: make sure central_cache is aligned properly
-  CHECK_CONDITION((sizeof(central_cache_[0]) % 64) == 0);
-  for (int i = 0; i < num_size_classes(); ++i) {
-    central_cache_[i].Init(i);
-  }
+	void Static::InitStaticVars() {
+		sizemap_.Init();
+		span_allocator_.Init();
+		span_allocator_.New(); // Reduce cache conflicts
+		span_allocator_.New(); // Reduce cache conflicts
+		stacktrace_allocator_.Init();
+		// Do a bit of sanitizing: make sure central_cache is aligned properly
+		CHECK_CONDITION((sizeof(central_cache_[0]) % 64) == 0);
+		for (int i = 0; i < num_size_classes(); ++i) {
+			central_cache_[i].Init(i);
+		}
 
-  new (&pageheap_.memory) PageHeap;
-  new (&extended_memory_.memory) PageHeap::ExtendedMemory;
-  new (&pagemap_.memory) PageHeap::PageMap;
+		for(int i=0; i<pageheap_count; i++){
+			new (&pageheap_[i].memory) PageHeap;
+		}
+		new (&extended_memory_.memory) PageHeap::ExtendedMemory;
+		new (&pagemap_.memory) PageHeap::PageMap;
 
 #if defined(ENABLE_AGGRESSIVE_DECOMMIT_BY_DEFAULT)
-  const bool kDefaultAggressiveDecommit = true;
+		const bool kDefaultAggressiveDecommit = true;
 #else
-  const bool kDefaultAggressiveDecommit = false;
+		const bool kDefaultAggressiveDecommit = false;
 #endif
 
 
-  bool aggressive_decommit =
-    tcmalloc::commandlineflags::StringToBool(
-      TCMallocGetenvSafe("TCMALLOC_AGGRESSIVE_DECOMMIT"),
-                         kDefaultAggressiveDecommit);
+		bool aggressive_decommit =
+			tcmalloc::commandlineflags::StringToBool(
+					TCMallocGetenvSafe("TCMALLOC_AGGRESSIVE_DECOMMIT"),
+					kDefaultAggressiveDecommit);
 
-  extended_memory()->SetAggressiveDecommit(aggressive_decommit);
+		extended_memory()->SetAggressiveDecommit(aggressive_decommit);
 
-  inited_ = true;
+		inited_ = true;
 
-  DLL_Init(&sampled_objects_);
-}
+		DLL_Init(&sampled_objects_);
+	}
 
-void Static::InitLateMaybeRecursive() {
+	void Static::InitLateMaybeRecursive() {
 #if defined(HAVE_FORK) && defined(HAVE_PTHREAD) \
-  && !defined(__APPLE__) && !defined(TCMALLOC_NO_ATFORK)
-  // OSX has it's own way of handling atfork in malloc (see
-  // libc_override_osx.h).
-  //
-  // For other OSes we do pthread_atfork even if standard seemingly
-  // discourages pthread_atfork, asking apps to do only
-  // async-signal-safe calls between fork and exec.
-  //
-  // We're deliberately attempting to register atfork handlers as part
-  // of malloc initialization. So very early. This ensures that our
-  // handler is called last and that means fork will try to grab
-  // tcmalloc locks last avoiding possible issues with many other
-  // locks that are held around calls to malloc. I.e. if we don't do
-  // that, fork() grabbing malloc lock before such other lock would be
-  // prone to deadlock, if some other thread holds other lock and
-  // calls malloc.
-  //
-  // We still leave some way of disabling it via
-  // -DTCMALLOC_NO_ATFORK. It looks like on glibc even with fully
-  // static binaries malloc is really initialized very early. But I
-  // can see how combination of static linking and other libc-s could
-  // be less fortunate and allow some early app constructors to run
-  // before malloc is ever called.
+		&& !defined(__APPLE__) && !defined(TCMALLOC_NO_ATFORK)
+		// OSX has it's own way of handling atfork in malloc (see
+		// libc_override_osx.h).
+		//
+		// For other OSes we do pthread_atfork even if standard seemingly
+		// discourages pthread_atfork, asking apps to do only
+		// async-signal-safe calls between fork and exec.
+		//
+		// We're deliberately attempting to register atfork handlers as part
+		// of malloc initialization. So very early. This ensures that our
+		// handler is called last and that means fork will try to grab
+		// tcmalloc locks last avoiding possible issues with many other
+		// locks that are held around calls to malloc. I.e. if we don't do
+		// that, fork() grabbing malloc lock before such other lock would be
+		// prone to deadlock, if some other thread holds other lock and
+		// calls malloc.
+		//
+		// We still leave some way of disabling it via
+		// -DTCMALLOC_NO_ATFORK. It looks like on glibc even with fully
+		// static binaries malloc is really initialized very early. But I
+		// can see how combination of static linking and other libc-s could
+		// be less fortunate and allow some early app constructors to run
+		// before malloc is ever called.
 
-  perftools_pthread_atfork(
-    CentralCacheLockAll,    // parent calls before fork
-    CentralCacheUnlockAll,  // parent calls after fork
-    CentralCacheUnlockAll); // child calls after fork
+		perftools_pthread_atfork(
+				CentralCacheLockAll,    // parent calls before fork
+				CentralCacheUnlockAll,  // parent calls after fork
+				CentralCacheUnlockAll); // child calls after fork
 #endif
 
 #ifndef NDEBUG
-  // pthread_atfork above may malloc sometimes. Lets ensure we test
-  // that malloc works from here.
-  free(malloc(1));
+		// pthread_atfork above may malloc sometimes. Lets ensure we test
+		// that malloc works from here.
+		free(malloc(1));
 #endif
-}
+	}
 
 }  // namespace tcmalloc
