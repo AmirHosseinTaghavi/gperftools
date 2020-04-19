@@ -359,18 +359,18 @@ namespace tcmalloc {
 												/*
 													 >>> for flowchart 10 goto New method implementation in page_heap.cc file.
 												 */
-												pid_t thread_id = syscall(__NR_gettid); 
-												Log(kLog, __FILE__, __LINE__,
-																				"begin --> thread ", thread_id, " requests memory from pageheap number ", pageheap_rank
-													 );
-												auto start = std::chrono::high_resolution_clock::now();
+				//								pid_t thread_id = syscall(__NR_gettid); 
+				//								Log(kLog, __FILE__, __LINE__,
+				//																"begin --> thread ", thread_id, " requests memory from pageheap number ", pageheap_rank
+				//									 );
+				//								auto start = std::chrono::high_resolution_clock::now();
 												span = Static::pageheap(pageheap_rank)->New(npages);
-												auto stop = std::chrono::high_resolution_clock::now();
-												auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop-start);
+				//								auto stop = std::chrono::high_resolution_clock::now();
+				//								auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop-start);
 												if (span) Static::pagemap()->RegisterSizeClass(span, size_class_);
-												Log(kLog, __FILE__, __LINE__,
-																				"end --> thread ", thread_id, " recieved memory duration: ", duration.count()
-													 );
+				//								Log(kLog, __FILE__, __LINE__,
+				//																"end --> thread ", thread_id, " recieved memory duration: ", duration.count()
+				//									 );
 								}
 								if (span == NULL) {
 												Log(kLog, __FILE__, __LINE__,
@@ -378,6 +378,17 @@ namespace tcmalloc {
 												lock_.Lock();
 												return;
 								}
+		//						auto start1 = std::chrono::high_resolution_clock::now();
+		//						int random[1000];
+		//						srand((unsigned)time(NULL));
+		//						for(int i=1; i<1000; i++){
+		//								random[i] = 1 + rand() % 10;
+		//						}
+		//						auto stop1 = std::chrono::high_resolution_clock::now();
+		//						auto duration1 = std::chrono::duration_cast<std::chrono::nanoseconds>(stop1-start1);
+		//						Log(kLog, __FILE__, __LINE__,
+		//														"new added duration: " ,duration1.count()
+		//							 );
 								ASSERT(span->length == npages);
 								// Cache sizeclass info eagerly.  Locking is not necessary.
 								// (Instead of being eager, we could just replace any stale info

@@ -135,20 +135,20 @@ namespace tcmalloc {
 		Span* large_span = NULL;
 		Span* new_spans[10];
 		{
-						Log(kLog, __FILE__, __LINE__,
-														"thread ", thread_id, " wants to acquire extended lock." 
-							 );
+			//			Log(kLog, __FILE__, __LINE__,
+			//											"thread ", thread_id, " wants to acquire extended lock." 
+			//				 );
 						SpinLockHolder h(Static::extended_lock());
-						Log(kLog, __FILE__, __LINE__,
-														"thread ", thread_id, " acquired extended lock." 
-							 );
-						Log(kLog, __FILE__, __LINE__,
-														"thread ", thread_id, " needs more memory, so requests 4 pages from extended memory unit." 
-							 );
+			//			Log(kLog, __FILE__, __LINE__,
+			//											"thread ", thread_id, " acquired extended lock." 
+			//				 );
+			//			Log(kLog, __FILE__, __LINE__,
+			//											"thread ", thread_id, " needs more memory, so requests 4 pages from extended memory unit." 
+			//				 );
 						large_span = Static::extended_memory()->AllocLarge(request_pages); 
-						Log(kLog, __FILE__, __LINE__,
-														"thread ", thread_id, " recieved 4 pages from extended memory unit." 
-							 );
+			//			Log(kLog, __FILE__, __LINE__,
+			//											"thread ", thread_id, " recieved 4 pages from extended memory unit." 
+			//				 );
 						for(int p=0; p<large_span->length-1; p++){
 								new_spans[p] = Static::span_allocator()->New();
 						}
@@ -185,7 +185,7 @@ namespace tcmalloc {
 				Static::pagemap()->CommitSpan(large_span);
 			}
 			PrependToFreeList(large_span);
-
+//}
 		}
 		return New(n);
 	}
@@ -227,7 +227,13 @@ namespace tcmalloc {
 		} else {
 			Static::pagemap()->ReduceUnmappedBytes(span->length << kPageShift);
 		}
+//		auto start = std::chrono::high_resolution_clock::now();
 		DLL_Remove(span);
+//		auto stop = std::chrono::high_resolution_clock::now();
+//		auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop-start);
+//		Log(kLog, __FILE__, __LINE__,
+//										"dll remove time: " ,duration.count()
+//			 );
 	}
 
 	void PageHeap::GetSmallSpanStats(SmallSpanStats* result) {
