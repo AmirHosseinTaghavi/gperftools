@@ -124,7 +124,7 @@ namespace tcmalloc {
 				int64 returned_length;
 			};
 			void GetSmallSpanStats(SmallSpanStats* result);
-
+			void AppendSpantoPageHeap(Span* span);
 			bool Check();
 			// Like Check() but does some more comprehensive checking.
 			bool CheckExpensive();

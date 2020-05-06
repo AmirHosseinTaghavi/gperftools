@@ -104,6 +104,7 @@ namespace tcmalloc {
 								}
 
 				void CentralFreeList::ReleaseToSpans(void* object) {
+
 								Span* span = MapObjectToSpan(object);
 								ASSERT(span != NULL);
 								ASSERT(span->refcount > 0);
@@ -140,8 +141,9 @@ namespace tcmalloc {
 												// Release central list lock while operating on pageheap
 												lock_.Unlock();
 												{
-																SpinLockHolder h(Static::extended_lock());
-																Static::extended_memory()->Delete(span);
+																int pageheap_rank;
+																SpinLockHolder h(Static::pageheap_lock(pageheap_rank));
+																Static::pageheap(pageheap_rank)->AppendSpantoPageHeap(span);
 												}
 												lock_.Lock();
 								} else {

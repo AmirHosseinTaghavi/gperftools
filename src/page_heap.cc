@@ -97,11 +97,10 @@ namespace tcmalloc {
 //        );
 
 		if (n > 1){
-			Static::extended_lock()->Lock();
-			Span* large_span = Static::extended_memory()->AllocLarge(n);
-			Static::extended_lock()->Unlock();
-			large_span->location = Span::IN_USE;
-			return large_span;
+						SpinLockHolder h(Static::extended_lock());
+						Span* large_span = Static::extended_memory()->AllocLarge(n);
+						large_span->location = Span::IN_USE;
+						return large_span;
 		}
 
 			//auto start = std::chrono::high_resolution_clock::now();
@@ -131,9 +130,12 @@ namespace tcmalloc {
 		}
 
 //		int request_pages = std::pow(2, std::ceil(log2(n+1))+1); 
-		int request_pages = 10; 
+//		Note on request pages value:
+//		while using 2mb hugepage size, request_pages size should be 12
+//		and for using 1gb hugepage size, request_pages size should be 
+		int request_pages = 12; 
 		Span* large_span = NULL;
-		Span* new_spans[10];
+		Span* new_spans[request_pages];
 		{
 			//			Log(kLog, __FILE__, __LINE__,
 			//											"thread ", thread_id, " wants to acquire extended lock." 
@@ -157,7 +159,7 @@ namespace tcmalloc {
 			ASSERT(large_span->location != Span::IN_USE);
 			const int old_location = large_span->location;
 			large_span->location = Span::IN_USE;
-			Event(large_span, 'A', 10);
+			Event(large_span, 'A', request_pages);
 
 			int large_span_items = large_span->length; 
 			for (int i=1; i<large_span_items; i++) {
@@ -236,6 +238,21 @@ namespace tcmalloc {
 //			 );
 	}
 
+	void PageHeap::AppendSpantoPageHeap(Span* span) {
+		ASSERT(Check());
+		ASSERT(span->location == Span::IN_USE);
+		ASSERT(span->length > 0);
+		ASSERT(Static::pagemap()->GetDescriptor(span->start) == span);
+		ASSERT(Static::pagemap()->GetDescriptor(span->start + span->length - 1) == span);
+		const Length n = span->length;
+		span->sizeclass = 0;
+		span->sample = 0;
+		span->location = Span::ON_NORMAL_FREELIST;
+		//Event(span, 'D', span->length);
+		PrependToFreeList(span);
+		ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
+		ASSERT(Check());
+	}
 	void PageHeap::GetSmallSpanStats(SmallSpanStats* result) {
 		result->normal_length = DLL_Length(&free_.normal);
 		result->returned_length = DLL_Length(&free_.returned);
