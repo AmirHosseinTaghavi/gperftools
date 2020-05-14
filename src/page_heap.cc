@@ -239,6 +239,10 @@ namespace tcmalloc {
 	}
 
 	void PageHeap::AppendSpantoPageHeap(Span* span) {
+
+		Log(kLog, __FILE__, __LINE__,
+										"apppend span length: " , span->length
+			 );
 		ASSERT(Check());
 		ASSERT(span->location == Span::IN_USE);
 		ASSERT(span->length > 0);

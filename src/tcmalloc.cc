@@ -1433,14 +1433,22 @@ inline void free_null_or_invalid(void* ptr, void (*invalid_free_fn)(void*)) {
 }
 
 static ATTRIBUTE_NOINLINE void do_free_pages(Span* span, void* ptr) {
-  SpinLockHolder h(Static::extended_lock());
+  //SpinLockHolder h(Static::extended_lock());
   if (span->sample) {
     StackTrace* st = reinterpret_cast<StackTrace*>(span->objects);
     tcmalloc::DLL_Remove(span);
     Static::stacktrace_allocator()->Delete(st);
     span->objects = NULL;
   }
-  Static::extended_memory()->Delete(span);
+		Log(kLog, __FILE__, __LINE__,
+										"do_free_pages called"
+			 );
+	{
+					int pageheap_rank;
+					SpinLockHolder h(Static::pageheap_lock(pageheap_rank));
+					Static::pageheap(pageheap_rank)->AppendSpantoPageHeap(span);
+	}
+  //Static::extended_memory()->Delete(span);
 }
 
 // Helper for the object deletion (free, delete, etc.).  Inputs:
