@@ -1440,9 +1440,9 @@ static ATTRIBUTE_NOINLINE void do_free_pages(Span* span, void* ptr) {
     Static::stacktrace_allocator()->Delete(st);
     span->objects = NULL;
   }
-		Log(kLog, __FILE__, __LINE__,
-										"do_free_pages called"
-			 );
+	//	Log(kLog, __FILE__, __LINE__,
+	//									"do_free_pages called"
+	//		 );
 	{
 					int pageheap_rank;
 					SpinLockHolder h(Static::pageheap_lock(pageheap_rank));
@@ -1642,7 +1642,12 @@ void* do_memalign_pages(size_t align, size_t size) {
   ASSERT(skip < alloc);
   if (skip > 0) {
     Span* rest = Static::extended_memory()->Split(span, skip);
-    Static::extended_memory()->Delete(span);
+	{
+					int pageheap_rank;
+					SpinLockHolder h(Static::pageheap_lock(pageheap_rank));
+					Static::pageheap(pageheap_rank)->AppendSpantoPageHeap(span);
+	}
+    //Static::extended_memory()->Delete(span);
     span = rest;
   }
 
@@ -1651,7 +1656,13 @@ void* do_memalign_pages(size_t align, size_t size) {
   ASSERT(span->length >= needed);
   if (span->length > needed) {
     Span* trailer = Static::extended_memory()->Split(span, needed);
-    Static::extended_memory()->Delete(trailer);
+
+	{
+					int pageheap_rank;
+					SpinLockHolder h(Static::pageheap_lock(pageheap_rank));
+					Static::pageheap(pageheap_rank)->AppendSpantoPageHeap(span);
+	}
+   // Static::extended_memory()->Delete(trailer);
   }
   return SpanToMallocResult(span);
 }
