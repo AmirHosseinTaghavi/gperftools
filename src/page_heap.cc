@@ -99,6 +99,7 @@ namespace tcmalloc {
 		if (n > 1){
 						SpinLockHolder h(Static::extended_lock());
 						Span* large_span = Static::extended_memory()->AllocLarge(n);
+						//Log(kLog, __FILE__, __LINE__, "lage span length: ", large_span->length, large_span->sizeclass);
 						large_span->location = Span::IN_USE;
 						return large_span;
 		}
@@ -239,12 +240,6 @@ namespace tcmalloc {
 	}
 
 	void PageHeap::AppendSpantoPageHeap(Span* span) {
-
-		//if(span->length > 1){
-		//Log(kLog, __FILE__, __LINE__,
-		//								"apppend span length: " , span->length
-		//	 );
-//	}
 		ASSERT(Check());
 		ASSERT(span->location == Span::IN_USE);
 		ASSERT(span->length > 0);
@@ -255,9 +250,17 @@ namespace tcmalloc {
 		span->sample = 0;
 		span->location = Span::ON_NORMAL_FREELIST;
 		//Event(span, 'D', span->length);
-		PrependToFreeList(span);
-		ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
-		ASSERT(Check());
+		if (span->length > 1)
+		{
+			SpinLockHolder h(Static::extended_lock());
+			Static::extended_memory()->PrependToFreeSet(span);
+		}
+		else
+		{
+			PrependToFreeList(span);
+			ASSERT(Static::pagemap()->GetUnmappedBytes() + Static::pagemap()->GetCommitedBytes() == Static::pagemap()->GetSystemBytes());
+			ASSERT(Check());
+		}
 	}
 	void PageHeap::GetSmallSpanStats(SmallSpanStats* result) {
 		result->normal_length = DLL_Length(&free_.normal);

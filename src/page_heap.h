@@ -140,6 +140,9 @@ namespace tcmalloc {
 					// span of exactly the specified length.  Else, returns NULL.
 					Span* AllocLarge(Length n);
 
+					// Prepends span to appropriate free list, and adjusts stats.
+					void PrependToFreeSet(Span* span);
+
 					bool Check();
 
 					// Try to release at least num_pages for reuse by the OS.  Returns
@@ -190,9 +193,6 @@ namespace tcmalloc {
 
 					// Removes span from its free list, and adjust stats.
 					void RemoveFromFreeSet(Span* span);
-
-					// Prepends span to appropriate free list, and adjusts stats.
-					void PrependToFreeSet(Span* span);
 
 					// Attempts to decommit 's' and move it to the returned freelist.
 					//

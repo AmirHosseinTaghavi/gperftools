@@ -1367,6 +1367,7 @@ static void *nop_oom_handler(size_t size) {
 >>> flowchart 1. start
 */
 ATTRIBUTE_ALWAYS_INLINE inline void* do_malloc(size_t size) {
+	//Log(kLog, __FILE__, __LINE__, "do malloc size: ", size);
   if (PREDICT_FALSE(ThreadCache::IsUseEmergencyMalloc())) {
     return tcmalloc::EmergencyMalloc(size);
   }
@@ -1382,6 +1383,7 @@ ATTRIBUTE_ALWAYS_INLINE inline void* do_malloc(size_t size) {
   >>> flowchart 2. map allocation size to proper size class
   */
   if (PREDICT_FALSE(!Static::sizemap()->GetSizeClass(size, &cl))) {
+	//Log(kLog, __FILE__, __LINE__, "do malloc size: ", size);
     return do_malloc_pages(cache, size);
   }
 
@@ -1440,9 +1442,7 @@ static ATTRIBUTE_NOINLINE void do_free_pages(Span* span, void* ptr) {
     Static::stacktrace_allocator()->Delete(st);
     span->objects = NULL;
   }
-	//	Log(kLog, __FILE__, __LINE__,
-	//									"do_free_pages called"
-	//		 );
+	//	Log(kLog, __FILE__, __LINE__, "do_free_pages called");
 	{
 					int pageheap_rank;
 					SpinLockHolder h(Static::pageheap_lock(pageheap_rank));
